@@ -374,10 +374,14 @@ class HarmonicOscillator:
     """
     basic class for harmonic oscillator
     """
-    def __init__(self, omega, mass=1, x0=0):
+    def __init__(self, omega, mass=1, x0=0, nmax=None, anharmonicity=None):
         self.mass = mass
         self.omega = omega
         self.x0 = 0
+        self.nmax = nmax # fock space truncation
+
+        self.H = None
+        self.anharmonicity = anharmonicity
 
     def eigenstate(self, x, n=0):
         x = x - self.x0
@@ -388,6 +392,34 @@ class HarmonicOscillator:
 
     def potential(self, x):
         return 1/2 * self.omega * (x-self.x0)**2
+
+    def buildH(self, n=None, ZPE=False):
+        """
+        Hamiltonian for harmonic oscilator
+
+        input:
+            freq: fundemental frequency in units of Energy
+            n : size of matrix
+            ZPE: boolean, if ZPE is included in the Hamiltonian
+        output:
+            h: hamiltonian of the harmonic oscilator
+        """
+        if n is None:
+            n = self.nmax
+
+        freq = self.omega
+
+        if ZPE:
+            h = lil_matrix((n,n))
+            h = h.setdiag((np.arange(n) + 0.5) * freq)
+        else:
+            h = lil_matrix((n, n)).setdiag(np.arange(n) * freq)
+
+        self.H = h
+        return h
+
+    def xn(self):
+        pass
 
 
 
@@ -1129,10 +1161,10 @@ def transform(A, v):
     """
     if isinstance(A, np.ndarray):
         Anew = dag(v).dot(A.dot(v))
-        
+
     elif isinstance(A, list):
         Anew = [dag(v) @ a @ v for a in A]
-    
+
     #Anew = csr_matrix(A)
 
     return Anew

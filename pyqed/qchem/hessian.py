@@ -641,12 +641,6 @@ def create_displaced_geometries(mf, mode_id, npts=9, sampling='scan'):
         return Qx, Qy 
 
 
-# from pyqed import au2ev 
-
-# logging.basicConfig(level=logging.DEBUG)
-
-
-
 def scan(mol, mode_id, q=None):
 
     configurations = create_displaced_geometries(mol, mode_id=mode_id, method='dft')

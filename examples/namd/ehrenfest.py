@@ -19,7 +19,9 @@ mol.build(domain=[[-10, 10], ] * 2, npts=[31, 31])
 
 ed = Ehrenfest(ndim=mol.ndim, ntraj=10, nstates=mol.nstates, model=mol, mass=[1836, ] * 2)
 
-ed.run(dt=0.1, nt=10)
+ed.run(dt=0.1, nt=10, method='RK4')
+
+
 
 
 

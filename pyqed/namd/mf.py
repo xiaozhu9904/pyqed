@@ -4,7 +4,7 @@
 Created on Sun Jun 11 23:25:51 2017
 
 
-Ehrenfest dynamics with a single mixed-classical trajectory
+Ehrenfest dynamics for model Hamiltonians
 
 @author: binggu
 
@@ -13,19 +13,15 @@ Ehrenfest dynamics with a single mixed-classical trajectory
 
 
 import numpy as np
-#import scipy
 import numba
 import sys
 import math
 import tqdm
-from pyqed import au2k, au2angstrom, au2wavenumber
+from pyqed import au2k, au2angstrom, au2wavenumber, ket2dm, expm
 from opt_einsum import contract
+from scipy.linalg import expm
+from pyqed import Molecule
 
-
-# bohr_angstrom = 0.52917721092
-# hartree_wavenumber = 219474.63
-
-#hartree_wavenumber = scipy.constants.value(u'hartree-inverse meter relationship') / 1e2
 
 
 def M1mat(a, Nb):
@@ -214,6 +210,33 @@ def Vint(x,y):
 
     return v0
 
+def unit_vector(vector):
+    """ Returns the unit vector of the vector.  """
+    return vector / np.linalg.norm(vector)
+
+def angle(v1, v2):
+    """
+    Returns the angle in radians between vectors 'v1' and 'v2'
+
+    Parameters
+    ----------
+    v1 : TYPE
+        DESCRIPTION.
+    v2 : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
+
+
 
 def ground(x):
     return 0.5 * np.sum(x**2), x
@@ -222,15 +245,15 @@ def excited(x):
     return 0.5 * np.sum((x-1.0)**2) + 1.0, x - 1.0
 
 # @numba.autojit
-def mean_field_force(y,c):
+# def mean_field_force(y,c):
 
-    V0, dV0 = ground(y)
-    V1, dV1 = excited(y)
+#     V0, dV0 = ground(y)
+#     V1, dV1 = excited(y)
 
-    Vmf = abs(c[:,0])**2 * V0 + abs(c[:, 1])**2 * V1
-    dVmf = abs(c[:, 0])**2 * dV0 + abs(c[:, 1])**2 * dV1
+#     Vmf = abs(c[:,0])**2 * V0 + abs(c[:, 1])**2 * V1
+#     dVmf = abs(c[:, 0])**2 * dV0 + abs(c[:, 1])**2 * dV1
 
-    return Vmf, dVmf
+#     return Vmf, dVmf
 
 
 # class Ehrenfest:
@@ -264,23 +287,54 @@ def mean_field_force(y,c):
 #         pass
 
 class EhrenfestTrajectory:
-    def __init__(self, x, p, c, energy=None, grad=None, nac=None):
+    def __init__(self, x, p, c, mass=None, energy=None, grad=None, nac=None):
         self.x = x
         self.p = p
+        if mass is not None:
+            self.v = p/mass
+        else:
+            self.v = None
+
         self.c = c
         self.nac = nac
         self.energy = energy
         self.grad = grad
 
+        self.force = None
+
+        self.p_prev = None # p(t-dt) momentum as previous time step
+        self.nac_prev = None # NAC previous time step
+
+    def rdm(self):
+        return ket2dm(self.c)
+
+class AbInitioEhrenfestTrajectory(EhrenfestTrajectory, Molecule):
+    def __init__(self, atom_coords, p, c, *args):
+        self.atom_coords = atom_coords
+        self.p = p
+        self.c = c
+
+        pass
+
+
+
+
     # def evolve_x(self, dt):
     #     pass
 
+class TDDFTDriver:
+    def __init__(self, atom):
+        return
+
+    def nonadiabatic_coupling(self):
+        # return e, grad, nac
+        pass
 
 class Ehrenfest:
     """
     Ehrenfest dynamics for model Hamiltonians
     """
-    def __init__(self, ndim, ntraj, nstates, mass=1, model=None):
+    def __init__(self, ndim, ntraj, nstates, mass=1, nac_driver=None):
         """
         Ehrenfest dynamics for model Hamiltonians
 
@@ -322,7 +376,8 @@ class Ehrenfest:
         # self.grid     = pes_grid
         self.ndim     = ndim  #
 
-        self.model = model
+        self.nac_driver = nac_driver
+        self.trajs = None
 
 
 
@@ -367,6 +422,7 @@ class Ehrenfest:
             DESCRIPTION.
 
         """
+        ntraj = self.ntraj
 
         if unit == 'K':
             temperature = temperature/au2k
@@ -376,13 +432,18 @@ class Ehrenfest:
             raise ValueError(f"Invalid unit: {unit}")
 
 
+        if isinstance(ax, (int, float)):
+            ax = [ax, ] * self.ndim
 
         self.w = np.array([1./self.ntraj]*self.ntraj)
 
+        # Gaussian distribution, typically from a local harmonic approximation
         if distribution.lower() == 'gaussian':
 
             x = np.random.randn(self.ntraj, self.ndim)
-            x = x / np.sqrt(2.0 * ax) + x0
+
+            for j in range(self.ndim):
+                x[:, j] = x[:, j] / np.sqrt(2.0 * ax[j]) + x0[j]
 
             p = np.zeros((self.ntraj, self.ndim))
 
@@ -390,7 +451,14 @@ class Ehrenfest:
         c = np.zeros((self.ntraj, self.nstates), dtype=complex)
         c[:, init_state] = 1
 
-        return x, p, c
+        trajs = []
+        for n in range(ntraj):
+            traj = EhrenfestTrajectory(x[n], p[n], c[n])
+            trajs.append(traj)
+
+        self.trajs = trajs
+
+        return trajs
 
     # def initialize(self, y0, width, E_kin_au, mix_state=None):
     #     # self.ndim = len(y0)
@@ -449,8 +517,10 @@ class Ehrenfest:
     #     return self.nac_driver.gradients(yk)
 
 
-    def _rhs_c(self, c, v, energy, nac):
+    def _dc(self, c, v, energy, nac):
         """
+        equation of motion for C
+
         .. math::
 
             dC/dt = -i \mathbf{H}_\text{eff}  C,
@@ -474,6 +544,21 @@ class Ehrenfest:
 
         return -1j * H @ c
 
+    def H(self, v, energy, nac):
+        """
+        equation of motion for C
+
+        .. math::
+
+            dC/dt = -i \mathbf{H}_\text{eff}  C,
+
+            H_eff[i,i] = E_i,   H_eff[j,i] = - i (v · d_{ji})
+        """
+
+        H = np.diag(energy) - 1j * contract('a, ija', v, nac)
+
+        return H
+
     def mean_field_force(self, x, c, energy=None, grad=None, nac=None, return_electronic_data=False):
 
         """
@@ -490,10 +575,10 @@ class Ehrenfest:
         # if energy is None:
         #     energy, grad = self.model.adiabatic_energy(x)
 
-        # if nac is None:
-        #     nac = self.model.nac(x)
+        if nac is None:
+            # nac = self.model.nac(x)
 
-        energy, grad, nac = self.model.nonadiabatic_coupling(x)
+            energy, grad, nac = self.nac_driver(x)
 
         # C = self.mo_coeff
 
@@ -522,7 +607,7 @@ class Ehrenfest:
         #             F -= coeff * d[j,i]
         # return F
 
-    def run(self, dt=0.01, nt=3000, method='euler', force_driver=None, nac_driver=None):
+    def run(self, dt=0.01, nt=10, nout=1, method='euler', force_driver=None, *args):
         """
         using velocity verlet method to propagate the nuclei
 
@@ -534,60 +619,100 @@ class Ehrenfest:
 
         mass = self.mass
 
-        x, p, c = self.sample(init_state=1)
+        dt2 = dt/2.
+
+        # trajs = self.trajs
 
         force = self.mean_field_force
 
-        p_old = p.copy()
+        # get electronic data at t0
+        for traj in self.trajs:
+            traj.force, traj.energy, traj.grad, traj.nac = force(traj.x, traj.c, return_electronic_data=True)
 
-        for step in range(nt):
+            # print('nac', traj.nac.shape)
+
+        for step in range(nt//nout):
         # for step in tqdm(range(nt),desc="processing"):
 
-            # half-step momentum
-            for k in range(self.ntraj):
+            for k in range(nout):
+
+                for traj in self.trajs:
+
+                    traj.p_prev = traj.p.copy()
+                    traj.nac_prev = traj.nac.copy()
+
+                    # half-step momentum
+                    traj.p += dt2 * traj.force
+
+                    # half-step position
+                    traj.x += dt2 * traj.p / mass
+
+                    # full-step c
+                    v = traj.p/mass
+
+                    # print(self._dc(traj.c, v, traj.energy, traj.nac))
+
+                    # traj.c = traj.c + dt * self._dc(traj.c, v, traj.energy, traj.nac)
+
+                    H = self.H(v, traj.energy, traj.nac)
+
+                    traj.c = expm(-1j * H * dt) @ traj.c
+
+                    # force at t + dt
+                    traj.energy, traj.grad, traj.nac = self.nac_driver(traj.x, *args)
+
+                    # TODO: parrallel transport gauge
+                    # for n in range(1, self.nstates):
+                    #     if angle(traj.nac_prev, traj.nac)
+                    
+                    # print(angle(traj.nac_prev[0, 1], traj.nac[0,1]))
+
+                    traj.force = force(traj.x, traj.c, traj.energy, traj.grad, traj.nac)
+
+                    # half p
+                    traj.p += dt2 * traj.force
+
+                    # half-step x
+                    traj.x += dt2 * traj.p_prev / mass
+                    
+                    
+
+                # output data
+                rho = self.rdm()
+                xAve = self.xAve()
+                print(xAve)
+
+                    #     traj.c += dt * self._dc(traj.c, v, energy, nac)
+
+        # self.trajs = trajs
+
+        return self
+
+    def rdm(self):
+        """
+            compute reduced electronic density matrix
+        """
+        n = self.nstates
+        rho = np.zeros((n, n), dtype=np.complex128)
+
+        for traj in self.trajs:
+            rho += traj.rdm()
+
+        return rho/self.ntraj
 
 
-                F, energy, _, nac = force(x[k], c[k], return_electronic_data=True)
+    def xAve(self):
 
-                p[k] += 0.5 * dt * F
-
-                # full-step position
-                x[k] += dt * p[k] / mass
-
-                F = force(x[k], c[k])
-                p[k] += 0.5 * dt * F
+        return sum([traj.x for traj in self.trajs])/self.ntraj
 
 
-                vk = p_old[k]/mass
 
-                if method=='RK4':
-
-                    from pyqed import rk4
-
-                    c[k] = rk4(c[k], self._rhs_c, vk, energy, nac)
-                    # ck0 = self.c[k].copy()
-                    # k1 = self._rhs_c(ck0,           x[k], vk)
-                    # k2 = self._rhs_c(ck0+0.5* dt*k1, x[k], vk)
-                    # k3 = self._rhs_c(ck0+0.5* dt*k2, x[k], vk)
-                    # k4 = self._rhs_c(ck0+ dt*k3, x[k], vk)
-                    # self.c[k] += (k1+2*k2+2*k3+k4)/6*dt
-                elif method == 'euler':
-
-                    c[k] += dt * self._rhs_c(c[k], vk, energy, nac)
-
-            p_old = p
-
-        return x, p, c
-
-    def population(self, c):
-        pass
-
-    def xAve(self, x):
-        pass
 
     def total_energy(self):
         pass
 
+    def norm(self):
+        pass
 
 class GeometricEhrenfest(Ehrenfest):
     pass
@@ -600,7 +725,7 @@ class CoupledOscillatorModel:
 
         H = 1/2 \omega_1 x^2 + 1/2 \omega_2 y^2  + 1/2 g x y
 
-    Diabatic Hamiltonian H(R) = [[H_11, H_12],[H_12, H_22]].
+
     """
     def __init__(self, omega1, omega2, g, x):
         self.omega1  = omega1
@@ -618,6 +743,8 @@ class CoupledOscillatorModel:
     def H_diab(self, R):
         """
         single point calculation
+
+        ### THIS IS WRONG!
 
         Parameters
         ----------
@@ -736,7 +863,6 @@ class CoupledOscillatorModel:
         with np.errstate(divide='ignore'):
             de_inv = 1/np.subtract.outer(E, E)
 
-        print(de_inv)
 
         de_inv = np.nan_to_num(de_inv, nan=0, posinf=0, neginf=0)
 
@@ -765,47 +891,57 @@ class CoupledOscillatorModel:
 
 
 class AbInitioEhrenfest(Ehrenfest):
-    def __init__(self, mol, ntraj, nstates, model=None):
+    def __init__(self, mol, ntraj, nstates, nac_driver=None):
 
         self.mol = mol
         self.natom = mol.natom
+        self.ndim = self.natom * 3
         self.ntraj = ntraj
         self.nstates = nstates
 
-        self.model = model
+        self.nac_driver = nac_driver # callable 
 
         ###
         self.mols = None # list of Molecule objects
         self.configurations = None
-
-
-    def mean_field_force(self, x, c):
-        """
-
-
-        Parameters
-        ----------
-        x : TYPE
-            DESCRIPTION.
-        c : TYPE
-            DESCRIPTION.
-
-        Returns
-        -------
-        None.
-
-        """
-        # natom = self.natom
-
-
-        # mol.energy()
-        # mol.nac()
-
-        # atom_coords = x.reshape(natom, 3)
-        # energy = scanner(atom_coords)
+    
+    def sample(self, distribution='gaussian'):
         pass
+        
 
-    # def run(self, dt, nt, driver='tddft'):
+
+    # def mean_field_force(self, x, c, energy=None, grad=None, nac=None):
+    #     """
+    #     Mean field force
+    #     .. math::
+
+    #         F_\text{MF} = -\sum_j |c_j|^2 \partial_\alpha E_j
+    #                      + \sum_{i, j} c_i^* c_j (E_i - E_j) d_{ji}
+
+
+    #     Refs
+    #         J. Chem. Phys. 150, 204124 (2019)
+    #     """
+    #     # if energy is None:
+    #     #     energy, grad = self.model.adiabatic_energy(x)
+
+    #     if nac is None:
+    #         # nac = self.model.nac(x)
+
+    #         energy, grad, nac = self.nac_driver(x)
+
+    #     # C = self.mo_coeff
+
+    #     # diagonal part
+    #     F_diag = - contract('a, ai -> i', np.abs(c)**2, grad)
+    #     dE  = energy[:, None] - energy[None, :]
+    #     F_non = contract('i, j, ij, ija -> a', c.conj(), c, dE, nac)
+    #     F = F_diag + F_non
+
+
+    #     return np.real(F)
+    
+    # def run(self, dt, nt):
 
     #     mass = self.mass
 
@@ -819,63 +955,37 @@ class AbInitioEhrenfest(Ehrenfest):
 
 if __name__ == '__main__':
 
-    import matplotlib.pyplot as plt
-    from pyqed import au2fs,au2amu,amu2au, bohr2angstrom
-
-    # NA = const.Avogadro
-    # hartree_joule = const.physical_constants['Hartree energy'][0]
-    # a0_m = const.physical_constants['Bohr radius'][0]
-    # angstrom_to_bohr = 1e-10 / a0_m  # convert angstrom to bohr
-
-    # joule_angstrom2au = (1000 / NA) / hartree_joule / (angstrom_to_bohr**2)
-    # print("joule2au:", joule_angstrom2au)
-
-    # amu2au = const.physical_constants['atomic mass constant'][0] / const.physical_constants['electron mass'][0]
-
-
-    # set up the model Hamiltonian
-    omega1=3.0
-    omega2=1.0
-    g= 0.8
-
-    mass_nuc = 1/ omega2  # in atomic units, 1/omega2 is the mass of the low-energy oscillator
-    # E_kin_au= 0.1
-    sigma = np.sqrt(1.0/(2 *  mass_nuc * omega2))
-    width = 1.0 / sigma**2
-    print("Initial width:", width)
-
-    nstates = 2
-    model = CoupledOscillatorModel(omega1=omega1, omega2=omega2, g=g, x=1) #
-
-    Rs = np.linspace(-6, 6)
-    nac = np.zeros(len(Rs))
-    e = np.zeros((len(Rs), nstates))
-
-    for i, R in enumerate(Rs):
-        E, d = model.nac(R)
-
-        e[i] = E
-        nac[i] = d[0, 1, 0]
-
     import ultraplot as plt
-    fig, ax = plt.subplots()
-    ax.plot(Rs, nac)
 
-    fig, ax = plt.subplots()
-    ax.plot(Rs, e[:,0])
-    ax.plot(Rs, e[:,1])
+    from pyqed.models.ShinMetiu import ShinMetiu2
+    from pyqed import proton_mass as mp
 
+
+    mol = ShinMetiu2()
+
+    mol.build(domain=[[-10, 10], ] * 2, npts=[31, 31])
+
+    ed = Ehrenfest(ndim=mol.ndim, ntraj=1, nstates=mol.nstates, mass=[mp, ] * 2)
+    
+    ed.nac_driver = mol.nonadiabatic_coupling
+    
+    ed.sample(init_state=2, x0=[0, 1.3], ax=18)
+    ed.run(dt=0.5, nt=400, nout=2)
+
+    rho = ed.rdm()
+
+    print(rho)
 
     #######################
     ### Ehrenfest dynamics
     #######################
-    ehrenfest = Ehrenfest(ntraj=10, ndim = 1, mass=mass_nuc, # x is quantum , y is classical , dimension is 1
-                             nstates=2, model=model)
+    # ehrenfest = Ehrenfest(ntraj=10, ndim = 1, mass=mass_nuc, # x is quantum , y is classical , dimension is 1
+    #                          nstates=2, model=model)
 
-    # ehrenfest.sample(initial_state=1)
-    dt = 0.1
-    nt = 10
-    y_steps, py_steps, c_steps = ehrenfest.run(dt=dt, nt = nt, method='euler')
+    # # ehrenfest.sample(initial_state=1)
+    # dt = 0.1
+    # nt = 10
+    # y_steps, py_steps, c_steps = ehrenfest.run(dt=dt, nt = nt, method='euler')
 
 
     # np.savez(f'dyn_2d_coupledoscillator_p{E_kin_au}_traj{ntraj}_dt{dt}_Nt{Nt}.npz',

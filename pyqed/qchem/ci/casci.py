@@ -421,6 +421,9 @@ class CASCI:
         """
         pass
 
+    def make_rdm12(self):
+        pass
+
 
 
 
