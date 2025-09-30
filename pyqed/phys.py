@@ -1,5 +1,7 @@
 from __future__ import absolute_import
 
+# from pyqed import au2k
+
 import numpy as np
 from numpy import exp, pi, sqrt
 from scipy.sparse import csr_matrix, lil_matrix, identity, kron, linalg,\
@@ -418,7 +420,7 @@ def spin_ops(m):
 def rotate(angle):
     return np.array()
 
-class HarmonicOscillator:
+class SHO:
     """
     basic class for harmonic oscillator
     """
@@ -468,7 +470,39 @@ class HarmonicOscillator:
 
     def xn(self):
         pass
+    
+    def msd_classical(self, T=300):
+        """
+        mean-squared displacement for Boltzman distribution 
+        
+        .. math::
+            
+            <x^2> = k_B T/(m \omega^2)
 
+        Returns
+        -------
+        None.
+
+        """
+        
+        return T / au2k / self.mass /self.omega**2 
+    
+    def msd(self, T=300):
+        """
+        
+
+        Parameters
+        ----------
+        T : TYPE, optional
+            DESCRIPTION. The default is 300.
+
+        Returns
+        -------
+        None.
+
+        """
+
+        pass
 
 
 class Morse:

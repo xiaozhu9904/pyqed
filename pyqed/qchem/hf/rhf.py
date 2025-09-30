@@ -19,6 +19,10 @@ import sys
 from pyqed import dagger, dag
 from opt_einsum import contract
 
+from functools import reduce
+import math
+
+
 class RHF:
     def __init__(self, mol, init_guess='h1e'):
         self.mol = mol
@@ -469,7 +473,7 @@ def make_rdm1(mo_coeff, mo_occ, **kwargs):
 
 
 
-def hartree_fock(mol, max_cycle=50, tol=1e-8):
+def hartree_fock(mol, dm0=None, init_guess='hcore', max_cycle=50, tol=1e-8):
 
     #calculate the overlap matrix S
     #the matrix should be symmetric with diagonal entries equal to one
@@ -524,7 +528,8 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
     #diagonalize overlap matrix to get transformation matrix X
     #print("diagonalizing overlap matrix")
     s, U = eigh(S)
-    #print("building transformation matrix")
+    
+    # building transformation matrix S^{-1/2}
     X = U.dot(np.diagflat(s**(-0.5)).dot(dagger(U)))
 
 
@@ -564,9 +569,78 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
         h = dag(X) @ h @ X
         mo_energy, C = eigh(h)
         return make_rdm1(C, mo_occ)
+    
+    if dm0 is None:
+        dm = init_guess_by_h1e(hcore)
 
-    dm = init_guess_by_h1e(hcore)
+        # dm = mf.get_init_guess(mol, mf.init_guess, s1e=s1e, **kwargs)
+    elif init_guess == 'hcore':
+        dm = dm0
+    else:
+        raise ValueError('Invalid init_guess.')
 
+
+    ### DIIS
+    nbas = mol.nao
+    
+    # diis storage
+    maxdiis = 6
+    diis_error_convergence = 1.0e-5
+    
+    diis_error_matrices = np.zeros((maxdiis, nbas, nbas))
+    diis_fock_matrices = np.zeros_like(diis_error_matrices)
+    
+    def diis(fock, dens, overlap, orth, iter):
+        """ 
+        Extrapolate new fock matrix based on input fock matrix
+            and previous fock-matrices.
+        
+        Arguments:
+            fock -- current fock matrix
+        
+        Returns:
+            (fock, error) -- interpolated fock matrix and diis-error
+        """
+        diis_fock = np.zeros_like(fock)
+        
+        if iter <= 1:
+            return fock, 0.0
+    
+        # copy data down to lower storage
+        for k in reversed(range(1, min(iter, maxdiis))):
+            
+            diis_error_matrices[k] = diis_error_matrices[k-1][:]
+            diis_fock_matrices[k] = diis_fock_matrices[k-1][:]
+    
+        # calculate error matrix
+        error_mat = reduce(np.dot, (fock, dens, overlap))
+        error_mat -= error_mat.T
+    
+        # put orthogonal error matrix in storage
+        # pulay use S^(-1/2) but here we choose whatever the user has defined
+        diis_error_matrices[0]  = reduce(np.dot, (orth.T, error_mat, orth))
+        diis_fock_matrices[0] = fock[:]
+        diis_error_index = np.abs(diis_error_matrices[0]).argmax()
+        diis_error = math.fabs(np.ravel(diis_error_matrices[0])[diis_error_index])
+    
+        # calculate B-matrix and solve for coefficients that reduces error
+        bsize = min(iter, maxdiis)-1
+        bmat = -1.0 * np.ones((bsize+1,bsize+1))
+        rhs = np.zeros(bsize+1)
+        bmat[bsize, bsize] = 0
+        rhs[bsize] = -1
+        for b1 in range(bsize):
+            for b2 in range(bsize):
+                bmat[b1, b2] = np.trace(diis_error_matrices[b1].dot(diis_error_matrices[b2]))
+        C =  np.linalg.solve(bmat, rhs)
+    
+        # form new interpolated diis fock matrix
+        for i, k in enumerate(C[:-1]):
+            diis_fock += k*diis_fock_matrices[i]
+    
+        return diis_fock, diis_error
+       
+    
     # nuclear energy
     # nuclear_energy = 0.0
     # for A in range(len(Z)):
@@ -582,13 +656,17 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
     conv = False
     for scf_iter in range(max_cycle):
 
-        # #calculate the two electron part of the Fock matrix
-
+        # calculate the two electron part of the Fock matrix
         vhf = get_veff(mol, dm)
         F = hcore + vhf
+        
+        # obtain better (interpolated) fock matrix through diis accelleration
+        
+        # print('DIIS')
+        F, diis_error = diis(F, dm, S, X, scf_iter)
+
 
         electronic_energy = energy_elec(dm, hcore, vhf)
-
 
         #print("E_elec = ", electronic_energy)
 
@@ -623,7 +701,7 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
 
     if not conv: sys.exit('SCF not converged.')
 
-    print('HF energy = ', total_energy)
+    print('E(HF) = ', total_energy)
 
     # check if this hartree-fock calculation is for configuration interaction
     # or not, if yes, output the essential information
@@ -636,12 +714,14 @@ def hartree_fock(mol, max_cycle=50, tol=1e-8):
 
 if __name__ == '__main__':
     from pyscf import gto, scf
-    mol = gto.M(atom='H 0 0 0; H 0 0 1.1', basis='cc-pvdz')
-    conv, e, mo_e, mo, mo_occ = scf.hf.kernel(scf.hf.SCF(mol), dm0=np.eye(mol.nao_nr()))
-    print('conv = %s, E(HF) = %.12f' % (conv, e))
+    # mol = gto.M(atom='H 0 0 0; H 0 0 1.1', unit='b', basis='631g')
+    # conv, e, mo_e, mo, mo_occ = scf.hf.kernel(scf.hf.SCF(mol), dm0=np.eye(mol.nao_nr()))
+    # print('conv = %s, E(HF) = %.12f' % (conv, e))
     # conv = True, E(HF) = -1.081170784378
 
+    from pyqed import Molecule
+    mol = Molecule(atom='H 0 0 0; H 0 0 1.1', unit='a', basis='631g')
+    mol.build()
     # hartree_fock(mol)
-    # hf = RHF(mol).run()
-    # hf.run()
-    # print(hf.e_tot)
+    hf = RHF(mol)
+    hf.run()

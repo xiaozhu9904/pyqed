@@ -115,6 +115,9 @@ def prony_decomposition(x, fft_ct, nexp):
     etal1 = omega_real
     expn1 = -t_real / scale
     
+    
+    # import matplotlib.pyplot as plt 
+
     # fft_t = x 
     plt.plot(x, np.real(fft_ct))
     
@@ -127,7 +130,7 @@ def prony_decomposition(x, fft_ct, nexp):
     plt.plot(x, res_t, '--', label='Fit')
     # plt.plot(fft_t, res_t.imag, '--')
     
-    plt.xlim(0, 1)
+    # plt.xlim(0, 1)
     plt.legend()
     
     err = (np.abs(fft_ct - res_t) ** 2).sum()/len(x) # sum of squared residues
@@ -136,7 +139,7 @@ def prony_decomposition(x, fft_ct, nexp):
 
 if __name__=='__main__':
     
-    n = 4000 # 2N + 1 points 
+    n = 1000 # 2N + 1 points 
     scale = 20 # range [0, 80]
     
     # scale_fft = 1000
@@ -159,15 +162,16 @@ if __name__=='__main__':
     
     
     x = np.linspace(0, scale, 2*n+1)
-    fft_ct = 1/x
-    fft_ct[0] = fft_ct[1]
     
-    etal1, expn1, err = prony_decomposition(x, fft_ct, 15)
+    fft_ct = 1/np.sqrt(x**2 + 1)
     
-    print(err)
+    # fft_ct[0] = fft_ct[1]
+    
+    etal1, expn1, err = prony_decomposition(x, fft_ct, 10)
+    
+    print(etal1, expn1)
 
-
-# plt.plot(fft_t, fft_ct - res_t)
+    # plt.plot(x, fft_ct)
 
 
 

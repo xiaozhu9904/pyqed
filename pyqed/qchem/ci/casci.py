@@ -357,8 +357,8 @@ class CASCI:
 
             I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
 
-            print(I_A, J_A)
-            print(a_t, a)
+            # print(I_A, J_A)
+            # print(a_t, a)
 
 
             H_CI = CI_H(binary, H1, H2, SC1, SC2)
@@ -381,7 +381,7 @@ class CASCI:
         self.ci = X
 
         for i in range(nstates):
-            print("Root {} {}".format(i, self.e_tot[i]))
+            print("CASCI Root {} {}".format(i, self.e_tot[i]))
 
         return self
 
@@ -424,28 +424,134 @@ class CASCI:
     def make_rdm12(self):
         pass
 
+    def dump(self, fname):
+        import pickle
+
+        with open(fname, 'wb') as outp:  # Overwrites any existing file.
+            pickle.dump(self, outp, pickle.HIGHEST_PROTOCOL)
+        return
+
+    def overlap(self, other):
+        return overlap(self, other)
 
 
+def overlap(cibra, ciket, s=None):
+    """
+    CASCI electronic overlap matrix
+
+    The MO overlap is a block matrix
+
+    S = [S_CC, S_CA]
+        [S_AC, S_AA]
+
+
+
+    Compute the overlap between Slater determinants first
+    and contract with CI coefficients
+
+    Parameters
+    ----------
+    cibra : TYPE
+        DESCRIPTION.
+    binary1 : TYPE
+        DESCRIPTION.
+    ciket : TYPE
+        DESCRIPTION.
+    binary2 : TYPE
+        DESCRIPTION.
+    s : TYPE
+        AO overlap.
+
+    Returns
+    -------
+    None.
+
+    """
+    # nstates = len(cibra) + 1
+
+    # overlap matrix between MOs at different geometries
+    if s is None:
+
+        from gbasis.integrals.overlap_asymm import overlap_integral_asymmetric
+
+        s = overlap_integral_asymmetric(cibra.mol._bas, ciket.mol._bas)
+        s = reduce(np.dot, (cibra.mf.mo_coeff.T, s, ciket.mf.mo_coeff))
+
+
+    nsd_bra = cibra.binary.shape[0]
+    nsd_ket = ciket.binary.shape[0]
+    S = np.zeros((nsd_bra, nsd_ket))
+
+    ncore_bra = cibra.ncore
+    ncore_ket = ciket.ncore
+    core_bra = list(range(cibra.ncore))
+    core_ket = list(range(ciket.ncore))
+
+
+
+    for I in range(nsd_bra):
+        occidx1_a  = core_bra + [i + ncore_bra for i, char in enumerate(cibra.binary[I, 0]) if char == 1]
+        occidx1_b  = core_bra + [i + ncore_bra for i, char in enumerate(cibra.binary[I, 1]) if char == 1]
+
+        print('a', occidx1_a, occidx1_b)
+
+        for J in range(nsd_ket):
+            occidx2_a  = core_ket + [i + ncore_ket for i, char in enumerate(ciket.binary[J, 0]) if char == 1]
+            occidx2_b  = core_ket + [i + ncore_ket for i, char in enumerate(ciket.binary[J, 1]) if char == 1]
+
+            # print('b', occidx2_a, occidx2_b)
+            # print(ciket.binary[J])
+
+    # TODO: the overlap matrix can be efficiently computed for CAS factoring out the core-electron overlap.
+
+            S[I, J] = np.linalg.det(s[np.ix_(occidx1_a, occidx2_a)]) * \
+                      np.linalg.det(s[np.ix_(occidx1_b, occidx2_b)])
+
+
+    return contract('IB, IJ, JA', cibra.ci.conj(), S, ciket.ci)
 
 if __name__ == "__main__":
     from pyqed import Molecule
     from pyqed.qchem.ci.cisd import overlap
 
+
+
+
     mol = Molecule(atom = [
-    ['H' , (0. , 0. , 0)],
-    ['H' , (0. , 0. , 1)], ])
+    ['Li' , (0. , 0. , 0)],
+    ['F' , (0. , 0. , 1)], ])
+
     mol.basis = '631g'
     mol.charge = 0
-    # mol.unit = 'b'
-    mol.build()
 
-    mf = mol.RHF()
-    mf.run()
+    mol.molecular_frame()
 
-    ncas, nelecas = (4,2)
-    casci = CASCI(mf, ncas, nelecas)
 
-    casci.run(2)
+    print(mol.atom_coords())
+
+    nstates = 3
+    Rs = np.linspace(1,4,4)
+    E = np.zeros((nstates, len(Rs)))
+
+    for R in Rs:
+
+        atom = [
+        ['Li' , (0. , 0. , 0)],
+        ['F' , (0. , 0. , R)]]
+
+        mol = Molecule(atom, basis='631g')
+
+        mol.build()
+
+        mf = mol.RHF()
+        mf.run()
+
+        ncas, nelecas = (4,2)
+        casci = CASCI(mf, ncas, nelecas)
+
+        casci.run(nstates)
+
+        casci.e_tot
 
     #### test overlap
     mol2 = Molecule(atom = [

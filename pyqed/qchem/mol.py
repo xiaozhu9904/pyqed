@@ -260,9 +260,9 @@ def format_atom(atoms, unit='b', origin=0, axes=None):
                     fmt_atoms.append(str2atm(atom.replace(',',' ')))
             else:
                 if isinstance(atom[1], (int, float)):
-                    fmt_atoms.append([(atom[0]), atom[1:4]])
+                    fmt_atoms.append([atom[0], atom[1:4]])
                 else:
-                    fmt_atoms.append([(atom[0]), atom[1]])
+                    fmt_atoms.append([atom[0], atom[1]])
 
     if axes is None:
         axes = np.eye(3)
@@ -276,7 +276,8 @@ def format_atom(atoms, unit='b', origin=0, axes=None):
     c = numpy.einsum('ix,kx->ki', axes * unit, c - origin)
     z = [a[0] for a in fmt_atoms]
 
-    return list(zip(z, c.tolist()))
+    return list(map(list, zip(z, c.tolist())))
+    # return list(zip(z, c.tolist()))
 
 
 
@@ -997,7 +998,16 @@ class Molecule:
 
     def molecular_frame(self):
         # transfrom to molecular frame
-        self.atom_coords -= self.com()
+
+        R0 = self.center_of_mass()
+                
+        for i in range(self.natom):        
+            R = np.array(self._atom[i][1]) 
+            R -= R0 
+            
+            self._atom[i][1] = list(R) 
+            
+        
         return self
 
     def eckart_frame(self, ref):

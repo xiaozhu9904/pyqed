@@ -538,7 +538,7 @@ class UCISD(CI):
 
 def overlap(cibra, ciket, s=None):
     """
-    CI electronic overlap matrix (CISD, CASCI)
+    CI electronic overlap matrix (CIS, CISD, CASCI ...)
 
     Compute the overlap between Slater determinants first
     and contract with CI coefficients
@@ -571,23 +571,26 @@ def overlap(cibra, ciket, s=None):
         s = overlap_integral_asymmetric(cibra.mol._bas, ciket.mol._bas)
         s = reduce(np.dot, (cibra.mf.mo_coeff.T, s, ciket.mf.mo_coeff))
 
-    nsd = cibra.binary.shape[0]
-    S = np.zeros((nsd, nsd))
+
+    nsd_bra = cibra.binary.shape[0]
+    nsd_ket = ciket.binary.shape[0]
+    S = np.zeros((nsd_bra, nsd_ket))
 
 
-    for I in range(nsd):
+    for I in range(nsd_bra):
         occidx1_a  = [i for i, char in enumerate(cibra.binary[I, 0]) if char == 1]
         occidx1_b  = [i for i, char in enumerate(cibra.binary[I, 1]) if char == 1]
 
         # print('a', occidx1_a, occidx1_b)
 
-        for J in range(nsd):
+        for J in range(nsd_ket):
             occidx2_a  = [i for i, char in enumerate(ciket.binary[J, 0]) if char == 1]
             occidx2_b  = [i for i, char in enumerate(ciket.binary[J, 1]) if char == 1]
 
             # print('b', occidx2_a, occidx2_b)
             # print(ciket.binary[J])
 
+    # TODO: the overlap matrix can be efficiently computed for CAS factoring out the core-electron overlap.
 
             S[I, J] = np.linalg.det(s[np.ix_(occidx1_a, occidx2_a)]) * \
                       np.linalg.det(s[np.ix_(occidx1_b, occidx2_b)])

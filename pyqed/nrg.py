@@ -12,7 +12,8 @@ from scipy import integrate
 from scipy.sparse import lil_matrix, csr_matrix, eye, kron
 from scipy.sparse.linalg import eigsh
 
-from pyqed import Cavity, Mol, Composite, dag, SineDVR, pauli, sort
+from pyqed import Cavity, Mol, Composite, dag, SineDVR, pauli, sort, householder
+
 from pyqed.phys import eigh
 from opt_einsum import contract
 
@@ -271,11 +272,13 @@ class NRG:
         self.alpha = alpha
 
 
+        self.xi = None
+        self.g = None
         ### Wilson chain params
         self.onsite = None
         self.hopping = None
         
-        self.g0 = None
+        self.t0 = None
 
     def add_coupling(self):
         pass
@@ -333,7 +336,6 @@ class NRG:
             DESCRIPTION.
 
         """
-        from pyqed import householder
         
         nmax = N
         n = np.arange(nmax)
@@ -345,37 +347,30 @@ class NRG:
         s = self.s
         omegac = self.omegac
 
-        print('alpha', alpha)
 
         # star configuration
         xi = (s+1)/(s+2) * (1. - L**(-s-2))/(1. - L**(-s-1)) * omegac * L**(-n)
 
         g2 = 2 * np.pi * alpha/(s+1) * omegac**2 * (1 - L**(-s-1))* L**(-n * (s+1))
         g = np.sqrt(g2)
-
-        A = np.zeros((N+1, N+1))
-        for n in range(N): 
-            A[n+1, n+1] = xi[n]
-            
-        A[0, 1:] = g
-        A[1:, 0] = g 
         
-
-        d, c, U = householder(A)
-                
-        U = U[1:, 1:]
+        self.g = g
+        self.xi = xi 
         
+        d, c, U = star_to_chain(xi, g)
         
         epsilon = d[1:]
         t = c[1:]
+            
+            
         
         # to chain
-        eta0 = sum(g2) # \int_0^{\omega_c} J(omega) \dif omega
+        # eta0 = sum(g2) # \int_0^{\omega_c} J(omega) \dif omega
         
         # print(c[0], np.sqrt(eta0) )
         # eta0 = c[0]
 
-        self.g0 = c[0]
+        self.t0 = c[0]
 
 
         # U = np.zeros((N, nmax))
@@ -416,7 +411,9 @@ class NRG:
     # def to_wilson_chain(self):
     #     pass
 
-    def run(self, N, nb=60, D=10):
+
+
+    def run(self, N, nb=60, D=10, chain=True):
         """
 
 
@@ -458,63 +455,162 @@ class NRG:
         Hb = site.buildH()
 
         a = site.annihilate()
-        ad = site.create()
+        # ad = site.create()
+        
+        Isite = site.identity
+
 
         # x = dvr.x
         # dvr.v = x**2/
 
-        # for n in range(nz):
-        H = kron(self.H, eye(nb)) + kron(I, epsilon[0] * Hb)  + \
-            self.g0 * np.sqrt(1/np.pi) * kron(Z/2., a + dag(a))
-
-        E, U = eigh(H, k=D)
-
-        E = E - E[0]
-        
-        e_tot[0] = E
-        
-        I = eye(D)
-
-        a_tilde = dag(U) @ kron(eye(2), a) @ U
-        ad_tilde = dag(U) @ kron(eye(2), ad) @ U
-        num =  U[:,0].conj().T @ kron(eye(2), Hb) @ U[:,0]
-
-        
-        print('t', t)
-
-
-        for n in range(N-1):
-
-
-            H = L * kron(np.diag(E), eye(nb)) + L**(n+1) * (\
-                kron(I, epsilon[n+1] * Hb) + t[n] * (kron(a_tilde, dag(a)) + \
-                                                     kron(ad_tilde, a)))
-
+        if chain:
+            
+            # for n in range(nz):
+            H = kron(self.H, eye(nb)) + kron(I, epsilon[0] * Hb)  + \
+                self.t0 * np.sqrt(1/np.pi) * kron(Z/2., a + dag(a))
+    
             E, U = eigh(H, k=D)
             E = E - E[0]
-
-            a_tilde = dag(U) @ kron(I, a) @ U
-            ad_tilde = dag(U) @ kron(I, ad) @ U
             
-            # num =  contract('i,ij,j->', U[:,0].conj(), kron(I, dag(a) @ a), U[:,0])
             
-            num =  U[:,0].conj().T @ kron(I, Hb) @ U[:,0]
+            e_tot[0] = E
+            
+            I = eye(D)
+    
+    
+            a_tilde = dag(U) @ kron(eye(2), a) @ U
+            # ad_tilde = dag(U) @ kron(eye(2), ad) @ U
+            num =  U[:,0].conj().T @ kron(eye(2), Hb) @ U[:,0]
+            
+            Z_tilde = dag(U) @ kron(Z, eye(nb)) @ U
+            
+
 
             
-            print(num)
+            for n in range(N-1):
+    
+    
+                H = L * kron(np.diag(E), eye(nb)) + L**(n+1) * (\
+                    kron(I, epsilon[n+1] * Hb) + t[n] * (kron(a_tilde, dag(a)) + \
+                                                         kron(dag(a_tilde), a)))
+    
+                E, U = eigh(H, k=D)
+                E = E - E[0]
+    
+                a_tilde = dag(U) @ kron(I, a) @ U
+                Z_tilde = dag(U) @ kron(Z_tilde, site.identity) @ U
+                
+                # ad_tilde = dag(U) @ kron(I, ad) @ U
+                
+                # num =  contract('i,ij,j->', U[:,0].conj(), kron(I, dag(a) @ a), U[:,0])
+                
+                num =  U[:,0].conj().T @ kron(I, Hb) @ U[:,0]
+                Sz = U[:,0].conj().T @ kron(Z_tilde, eye(nb)) @ U[:,0]
+                
+                print(num, Sz)
+                
+    
+                e_tot[n+1] = E
+    
+            return e_tot
+        
+        else:
+            # star 
+            
+            xi = self.xi 
+            g = self.g 
+            
+            # for n in range(nz):
+            H = kron(self.H, eye(nb)) + kron(I, xi[0] * Hb)  + \
+                g[0] * np.sqrt(1/np.pi) * kron(Z/2., a + dag(a))
+    
+            E, U = eigh(H, k=D)
+            E = E - E[0]
+            
+            e_tot[0] = E
+            
+            I = eye(D)
+    
+    
+            a_tilde = dag(U) @ kron(eye(2), a) @ U
+            # ad_tilde = dag(U) @ kron(eye(2), ad) @ U
+            num =  U[:,0].conj().T @ kron(eye(2), Hb) @ U[:,0]
+            
+            Z_tilde = dag(U) @ kron(Z, eye(nb)) @ U
+            
+            for n in range(N-1):
+    
+    
+                H = L * kron(np.diag(E), eye(nb)) + L**(n+1) * (\
+                    kron(I, xi[n+1] * Hb) + g[n+1]/2./np.sqrt(np.pi) * (kron(Z_tilde, dag(a) + a)))
+    
+                E, U = eigh(H, k=D)
+                E = E - E[0]
+    
+
+                
+                # ad_tilde = dag(U) @ kron(I, ad) @ U
+                
+                # num =  contract('i,ij,j->', U[:,0].conj(), kron(I, dag(a) @ a), U[:,0])
+                
+                num =  U[:,0].conj().T @ kron(I, Hb) @ U[:,0]
+                Sz = U[:,0].conj().T @ kron(Z_tilde, eye(nb)) @ U[:,0]
+                
+                a_tilde = dag(U) @ kron(I, a) @ U
+                Z_tilde = dag(U) @ kron(Z_tilde, site.identity) @ U
+                
+                print(num, Sz)
+                
+    
+                e_tot[n+1] = E
+    
+            return e_tot
             
 
-            e_tot[n+1] = E
 
-        return e_tot
+def star_to_chain(xi, g):
+    """
+    transform a star configuration to a Wilson chain model by Householder method
+    
+    .. math::
+        
+        H = \sum_i \omega_i a_i^\dagger a_i + S \otimes g_i (a_i+a_i^\dagger) 
+    
+    where S is an system operator. 
+    
+    Parameters
+    ----------
+    xi : TYPE
+        DESCRIPTION.
+    g : TYPE
+        DESCRIPTION.
 
+    Returns
+    -------
+    d : TYPE
+        mode frequencies.
+    c : TYPE
+        hopping. the first element is the impurity to the first site
+    U : TYPE
+        mode transformation matrix 
 
+    """
 
+    N = len(xi)
+    
+    A = np.zeros((N+1, N+1))
+    for n in range(N): 
+        A[n+1, n+1] = xi[n]
+        
+    A[0, 1:] = g
+    A[1:, 0] = g 
 
+    d, c, U = householder(A)
+            
+    U = U[1:, 1:]
+    
+    return d, c, U
 
-def star_to_chain():
-    # transform a star configuration to a Wilson chain model by Lancos method
-    pass
 
 # import numpy as np
 # from hamiltonian_not_diagonal import form_not_diagonal_hamiltonian
@@ -641,15 +737,15 @@ class TDNRG(NRG):
 if __name__=='__main__':
 
     I, X, Y, Z = pauli()
-    epsilon = 0
-    Delta = 1
+    epsilon = 0.
+    Delta = 0.01
     H = 0.5 * (epsilon * Z - X * Delta)
 
-    nrg = NRG(H, s=2, L=4., alpha=0.02, omegac=1)
+    nrg = NRG(H, s=0.8, L=2., alpha=0.05, omegac=1)
 
-    eps, t = nrg.discretize(100)
+    eps, t = nrg.discretize(80)
 
-    e_tot = nrg.run(20, nb=80, D=60)
+    e_tot = nrg.run(40, nb=32, D=40, chain=False)
 
     # print(eps)
     # print(t)
@@ -661,7 +757,7 @@ if __name__=='__main__':
 
     fig, ax = plt.subplots()
 
-    for j in range(8):
+    for j in range(6):
         ax.plot(e_tot[:-1,j], '-o')
 
     # omega = 1
