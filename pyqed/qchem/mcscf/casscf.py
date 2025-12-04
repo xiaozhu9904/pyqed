@@ -8,18 +8,6 @@ Created on Sun Nov  9 23:48:00 2025
 from pyqed.qchem.ci import CASCI
 import numpy as np
 
-class CASSCF(CASCI):
-    """
-
-    Using the OptOrbFCI algorithm to optimize orbitals (better than conventional
-                                                        CASSCF algorithm)
-
-
-
-    """
-    def run(self):
-        pass
-
 
 
 def newton_raphson():

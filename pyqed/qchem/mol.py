@@ -860,6 +860,8 @@ class Molecule:
                 except ValueError:
                     sys.stderr.write('\nFailed to parse geometry file  %s\n\n' % atom)
                     raise
+            else:
+                self._atom = format_atom(atom)
         else:
             self._atom = format_atom(atom)
 

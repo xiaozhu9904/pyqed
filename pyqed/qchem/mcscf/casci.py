@@ -59,7 +59,7 @@ def h1e_for_cas(mf, ncas, ncore, mo_coeff=None):
 
 
 class CASCI:
-    def __init__(self, mf, ncas, nelecas, ncore=None, mu=None):
+    def __init__(self, mf, ncas, nelecas, ncore=None, spin=None, mu=None):
         """
         Exact diagonalization (FCI) on the complete active space (CAS) by FCI or
         Jordan-Wigner transformation
@@ -113,6 +113,10 @@ class CASCI:
 
         self.mo_core = None
         self.mo_cas = None
+        
+        if spin is None:
+            spin = mf.mol.spin 
+        self.spin = spin 
 
         self.mf = mf
         self.chemical_potential = mu
@@ -124,11 +128,15 @@ class CASCI:
         self.e_core = None # core energy
         self.ci = None # CI coefficients
         self.H = None
+        
+        
+        self.hcore = None # effective 1e core Hamiltonian including the influence of frozen orbitals
         self.Nu = None
         self.Nd = None
         self.binary = None
         self.SC1 = None # SlaterCondon rule 1
         self.eri_so = None # spin-orbital ERI
+        
 
     def get_SO_matrix(self, spin_flip=False, H1=None, H2=None):
         """
@@ -220,6 +228,10 @@ class CASCI:
 
         return natural_orb_occ, natural_orb_coeff
 
+    def size(self, basis='sd', S=0):
+
+        return size(self.ncas, self.nelecas)
+
     def qubitization(self, orb='mo'):
 
         if orb == 'mo':
@@ -252,6 +264,19 @@ class CASCI:
 
 
     def fix_nelec_by_energy_penalty(self, shift=0.1):
+        """
+        fix the electron number for JW solver without symmetry 
+
+        Parameters
+        ----------
+        shift : TYPE, optional
+            DESCRIPTION. The default is 0.1.
+
+        Returns
+        -------
+        None.
+
+        """
 
         Na = self.Nu
         Nb = self.Nd
@@ -348,9 +373,12 @@ class CASCI:
             if not np.isclose(2*s, round(2*s)):
                 raise Warning("s = {} inconsistant spin value".format(s))
         else:
-            ss = s * (s+1)
+            if ss is None:
+                ss = s * (s+1)
+            else: 
+                raise ValueError('s and ss cannot be specified simulaneously.')
 
-        if s == 0:
+        if ss == 0:
             # first-order spin penalty J. Phys. Chem. A 2022, 126, 12, 2050–2060
             # H' = H + J \hat{S}^2
             pass
@@ -413,6 +441,8 @@ class CASCI:
             print('Number of determinants', binary.shape[0])
 
             H1, H2 = self.get_SO_matrix()
+            
+            self.hcore = H1 
 
             SC1, SC2 = SlaterCondon(binary)
 
@@ -423,10 +453,6 @@ class CASCI:
             I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
 
             # print(binary[I_A[0]], binary[J_A[0]])
-
-            # print(a_t[0], a[0])
-
-            # print('ca', ca)
 
             H_CI = CI_H(binary, H1, H2, SC1, SC2)
 
@@ -514,15 +540,15 @@ class CASCI:
         # else:
         #     c_core = 0
         if with_core and with_vir:
-            
+
             D = np.zeros((nmo, nmo), dtype=float)
             if ncore > 0: D[:ncore, :ncore] = 2
             D[ncore:ncore+ncas, ncore:ncore+ncas] = make_rdm1(ci, self.binary, self.SC1)
-    
+
             return D
         else:
             return make_rdm1(ci, self.binary, self.SC1)
-            
+
 
     def make_rdm1s(self, state_id):
         """
@@ -562,39 +588,39 @@ class CASCI:
 
 
         if with_core: # we probably never need this!
-        
+
             ncore = self.ncore
             ncas = self.ncas
             # nmo = self.mf.nmo
-            nmo = ncore + ncas 
-    
+            nmo = ncore + ncas
+
             D = np.zeros((nmo, nmo, nmo, nmo))
-            
+
             assert ncore > 0
-            
+
             # cccc block
             I = np.eye(ncore)
             D[:ncore, :ncore, :ncore, :ncore] = 4 * contract('ij, kl -> ijkl', I, I) - 2 * contract('ps, rq -> pqrs', I, I)
-            
+
             # ccaa block
             dm1 = self.make_rdm1(state_id)
-            
+
             for i in range(ncore):
                 D[i, i, ncore:ncore+ncas, ncore:ncore+ncas] = 2*dm1
                 D[ncore:ncore+ncas, ncore:ncore+ncas, i, i] = 2*dm1
                 D[i, ncore:ncore+ncas, i, ncore:ncore+ncas] = -dm1
                 D[ncore:ncore+ncas, i, ncore:ncore+ncas, i] = -dm1
-            
+
             D[ncore:ncore+ncas, ncore:ncore+ncas, ncore:ncore+ncas, ncore:ncore+ncas]=\
                 make_rdm2(ci, self.binary, self.SC1, self.SC2)
-            
+
             return D
-            
-        else: #active space DM 
 
-            return make_rdm2(ci, self.binary, self.SC1, self.SC2)    
+        else: #active space DM
 
-        
+            return make_rdm2(ci, self.binary, self.SC1, self.SC2)
+
+
     def contract_with_rdm2(self, h2e, state_id=0):
 
         if h2e.ndim == 4: # spin-free operator
@@ -672,10 +698,10 @@ class CASCI:
             c_cas = make_tdm1(self.ci[bra_id], self.ci[ket_id], self.binary, self.SC1, h1e)
 
         return c_cas + c_core
-    
+
     def make_tdm1(self, bra_id, ket_id=0):
         """
-        TDM 
+        TDM
 
         Parameters
         ----------
@@ -691,7 +717,7 @@ class CASCI:
         """
         cibra = self.ci[bra_id]
         ciket = self.ci[ket_id]
-        
+
         return make_tdm1(cibra, ciket, self.binary, self.SC1)
 
     def make_tdm2(self, bra_id, ket_id=0):
@@ -705,9 +731,105 @@ class CASCI:
         E_{qp} = q_alpha^\dagger p_alpha + q_beta^\dagger p_beta
         """
         raise NotImplementedError('TDM not implemented')
-        
 
 
+# def get_SO_matrix(mo_coeff, eri, spin_flip=False, H1=None, H2=None):
+#     """
+#     Given a rhf object get Spin-Orbit Matrices
+
+#     SF: bool
+#         spin-flip
+#     """
+
+#     Ca, Cb = mo_coeff
+
+#     H, energy_core = h1e_for_cas(mf, ncas=ncas, ncore=ncore, \
+#                                  mo_coeff=mo_coeff)
+
+#     # self.e_core = energy_core
+
+
+
+#     eri = mf.eri  # (pq||rs) 1^* 1 2^* 2
+
+#     ### compute SO ERIs (MO)
+#     eri_aa = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
+
+#     # physicts notation <pq|rs>
+#     # eri_aa = contract('ip, jq, ij, ir, js -> pqrs', Ca.conj(), Ca.conj(), eri, Ca, Ca)
+
+#     eri_aa -= eri_aa.swapaxes(1,3)
+
+#     eri_bb = eri_aa.copy()
+
+#     eri_ab = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Cb.conj(), Cb)
+#     eri_ba = contract('ip, jq, ijkl, kr, ls -> pqrs', Cb.conj(), Cb, eri, Ca.conj(), Ca)
+
+
+#     H2 = np.stack(( np.stack((eri_aa, eri_ab)), np.stack((eri_ba, eri_bb)) ))
+
+#     H1 = [H, H]
+
+#     if spin_flip:
+#         raise NotImplementedError('Spin-flip matrix elements not implemented yet')
+
+#     return H1, H2
+
+# def fcisolver(mo_occ):
+#     # mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
+#     binary = get_fci_combos(mo_occ = mo_occ)
+#     # self.binary = binary
+
+#     print('Number of determinants', binary.shape[0])
+
+#     H1, H2 = get_SO_matrix()
+
+#     SC1, SC2 = SlaterCondon(binary)
+
+
+#     I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+
+#     H_CI = CI_H(binary, H1, H2, SC1, SC2)
+
+#     E, X = eigsh(H_CI, k=nstates, which='SA')
+
+#     return E, X
+
+def size(norb, nelec, basis='sd', S=0):
+    """
+    size of CAS
+
+    Eq. 91, 92 Chem Rev 2012, 112, 108
+
+    Parameters
+    ----------
+    norb : TYPE
+        DESCRIPTION.
+    nelec : TYPE
+        DESCRIPTION.
+    basis : TYPE, optional
+        DESCRIPTION. The default is 'sd'.
+    S : TYPE, optional
+        DESCRIPTION. The default is 0.
+
+    Returns
+    -------
+    TYPE
+        DESCRIPTION.
+
+    """
+    from math import comb
+    # if isinstance(norb, int): norb = [norb, ] * 2
+    if isinstance(nelec, int): nelec = [nelec, ] * 2
+
+
+    # norb_a, norb_b = norb
+    na, nb = nelec
+    if basis == 'sd':
+        return comb(norb, na) * comb(norb, nb)
+    elif basis == 'csf':
+        N = na + nb
+        return (2*S+1)/(norb + 1) * comb(norb+1, N//2 - S) * comb(norb+1, N//2+S+1)
 
 def spin_square(dm1, dm2):
     """

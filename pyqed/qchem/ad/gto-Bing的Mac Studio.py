@@ -19,14 +19,31 @@ import scipy
 
 import jax.numpy as jnp
 from jax.numpy.linalg import vector_norm as norm
-from jax import grad, hessian, value_and_grad, vmap
-
-from pyqed import qchem, dagger
-import os
-import re
-
+from jax import grad, hessian, value_and_grad
 pi = np.pi
 
+from pyqed import qchem
+
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Oct 28 00:01:55 2024
+
+@author: bingg
+"""
+
+import numpy as np
+# from gbasis.parsers import parse_gbs, make_contractions
+# from gbasis.integrals.overlap import overlap_integral
+# from gbasis.integrals.kinetic_energy import kinetic_energy_integral
+# from gbasis.integrals.nuclear_electron_attraction import \
+# nuclear_electron_attraction_integral
+# from gbasis.integrals.electron_repulsion import electron_repulsion_integral
+
+
+import os
+import re
 
 def E(i,j,t,Qx,a,b):
     '''
@@ -54,17 +71,16 @@ def E(i,j,t,Qx,a,b):
     elif j == 0:
         # decrement index i
         return (1/(2*p))*E(i-1,j,t-1,Qx,a,b) - \
-            (q*Qx/a)*E(i-1,j,t,Qx,a,b) + \
-            (t+1)*E(i-1,j,t+1,Qx,a,b)
+        (q*Qx/a)*E(i-1,j,t,Qx,a,b) + \
+        (t+1)*E(i-1,j,t+1,Qx,a,b)
     else:
         # decrement index j
         return (1/(2*p))*E(i,j-1,t-1,Qx,a,b) + \
-            (q*Qx/b)*E(i,j-1,t,Qx,a,b) + \
-            (t+1)*E(i,j-1,t+1,Qx,a,b)
+        (q*Qx/b)*E(i,j-1,t,Qx,a,b) + \
+        (t+1)*E(i,j-1,t+1,Qx,a,b)
 
 def overlap(a,lmn1,A,b,lmn2,B):
-    '''
-    Evaluates overlap integral between two Gaussians
+    ''' Evaluates overlap integral between two Gaussians
     Returns a float.
     a: orbital exponent on Gaussian 'a' (e.g. alpha in the text)
     b: orbital exponent on Gaussian 'b' (e.g. beta in the text)
@@ -96,9 +112,8 @@ def S(a,b):
                 b.exps[ib],b.shell,b.origin)
     return s
 
-from scipy.special import hyp1f1
+from jax.scipy.special import hyp1f1
 # from jax import jit
-# from scipy.special import factorial2
 
 def factorial2(n):
     """
@@ -285,7 +300,7 @@ def R(t,u,v,n,p,PCx,PCy,PCz,RPC):
 def gaussian_product_center(a,A,b,B):
     return (a*A+b*B)/(a+b)
 
-def electron_nuclear_attraction(a,lmn1,A,b,lmn2,B,C):
+def nuclear_attraction(a,lmn1,A,b,lmn2,B,C):
     ''' Evaluates kinetic energy integral between two Gaussians
     Returns a float.
     a: orbital exponent on Gaussian 'a' (e.g. alpha in the text)
@@ -301,7 +316,8 @@ def electron_nuclear_attraction(a,lmn1,A,b,lmn2,B,C):
     l2,m2,n2 = lmn2
     p = a + b
     P = gaussian_product_center(a,A,b,B) # Gaussian composite center
-    RPC = np.linalg.norm(P-C)
+    RPC = norm(P-C)
+
     val = 0.0
     for t in range(l1+l2+1):
         for u in range(m1+m2+1):
@@ -313,10 +329,15 @@ def electron_nuclear_attraction(a,lmn1,A,b,lmn2,B,C):
     val *= 2*np.pi/p
     return val
 
-def point_charge(a,b,C):
-    '''Evaluates electron-nuclear attraction
 
-    $%overlap between two contracted Gaussians
+
+
+def point_charge(a,b,C, gradient=False):
+    '''Evaluates point charge integral as in electron-nuclear attraction
+
+    .. math::
+
+        v(R_C) = \langle g_A 1/|r - R_C| g_B \rangle
 
     Returns float.
     Arguments:
@@ -324,61 +345,40 @@ def point_charge(a,b,C):
     b: contracted Gaussian 'b', BasisFunction object
     C: center of nucleus
     '''
-    v = 0.0
-    for ia, ca in enumerate(a.coefs):
-        for ib, cb in enumerate(b.coefs):
-            v += a.norm[ia]*b.norm[ib]*ca*cb*\
-                electron_nuclear_attraction(a.exps[ia],a.shell,a.origin,
-                b.exps[ib],b.shell,b.origin,C)
-    return v
+    if not gradient:
 
-# def point_charge(a,b,C, gradient=False):
-#     '''Evaluates point charge integral as in electron-nuclear attraction
+        v = 0.0
+        for ia, ca in enumerate(a.coefs):
+            for ib, cb in enumerate(b.coefs):
+                v += a.norm[ia]*b.norm[ib]*ca*cb*\
+                    nuclear_attraction(a.exps[ia],a.shell,a.origin,
+                    b.exps[ib],b.shell,b.origin,C)
+        return v
 
-#     .. math::
+    else:
 
-#         v(R_C) = \langle g_A 1/|r - R_C| g_B \rangle
+        dv = value_and_grad(nuclear_attraction, argnums=-1)
+        ddv = hessian(nuclear_attraction, argnums=-1)
 
-#     Returns float.
-#     Arguments:
-#     a: contracted Gaussian 'a', BasisFunction object
-#     b: contracted Gaussian 'b', BasisFunction object
-#     C: center of nucleus
-#     '''
-#     # if not gradient:
+        v = 0
+        f = 0
+        g = 0
 
-#     v = 0.0
-#     for ia, ca in enumerate(a.coefs):
-#         for ib, cb in enumerate(b.coefs):
-#             v += a.norm[ia]*b.norm[ib]*ca*cb*\
-#                 nuclear_attraction(a.exps[ia],a.shell,a.origin,
-#                 b.exps[ib],b.shell,b.origin,C)
-#     return v
+        for ia, ca in enumerate(a.coefs):
+            for ib, cb in enumerate(b.coefs):
 
-    # else:
+                _v, _f = dv(a.exps[ia],a.shell,a.origin,
+                    b.exps[ib],b.shell,b.origin, C)
 
-    #     dv = value_and_grad(nuclear_attraction, argnums=-1)
-    #     ddv = hessian(nuclear_attraction, argnums=-1)
+                _g = ddv(a.exps[ia],a.shell,a.origin,
+                        b.exps[ib],b.shell,b.origin,C)
 
-    #     v = 0
-    #     f = 0
-    #     g = 0
+                prefactor = a.norm[ia]*b.norm[ib]*ca*cb
+                v += prefactor * _v
+                f += prefactor * _f
+                g += prefactor * _g
 
-    #     for ia, ca in enumerate(a.coefs):
-    #         for ib, cb in enumerate(b.coefs):
-
-    #             _v, _f = dv(a.exps[ia],a.shell,a.origin,
-    #                 b.exps[ib],b.shell,b.origin, C)
-
-    #             _g = ddv(a.exps[ia],a.shell,a.origin,
-    #                     b.exps[ib],b.shell,b.origin,C)
-
-    #             prefactor = a.norm[ia]*b.norm[ib]*ca*cb
-    #             v += prefactor * _v
-    #             f += prefactor * _f
-    #             g += prefactor * _g
-
-    #     return v, f, g
+        return v, f, g
 
 
 
@@ -637,8 +637,7 @@ def parse_gbs(gbs_basis_file):
 
 
 def make_contractions(basis_dict, atoms, coords, coord_types):
-    """
-    Return the contractions that correspond to the given atoms for the given basis.
+    """Return the contractions that correspond to the given atoms for the given basis.
 
     Parameters
     ----------
@@ -703,11 +702,11 @@ def make_contractions(basis_dict, atoms, coords, coord_types):
         )
 
     # make shells
+
     for icenter, (atom, coord) in enumerate(zip(atoms, coords)):
         for angmom, exps, coeffs in basis_dict[atom]:
 
             for shell in _shell(angmom):
-                print('shell', shell)
 
                 basis.append(
                     # GeneralizedContractionShell(
@@ -717,7 +716,7 @@ def make_contractions(basis_dict, atoms, coords, coord_types):
                     #     exps,
                     #     coord_types.pop(0),
                     #     icenter=icenter,
-                    ContractedGaussian(origin=coord, shell=shell, exps=exps, coefs=coeffs)
+                    ContractedGaussian(coord, shell, exps, coeffs)
                     #)
                 )
     return tuple(basis)
@@ -740,45 +739,19 @@ class Molecule(qchem.Molecule):
         """
         build AO integrals using raw implementation
         """
-        import pyqed
-        # basis = []
-        # nuclear_coor = []
-        # for atm_id in range(self.natom):
-        #     basis.append(sto3g_hydrogen(center=self.atom_coord(atm_id)))
-        #     nuclear_coor.append(self.atom_coord(atm_id))
+        basis = []
+        nuclear_coor = []
+        for atm_id in range(self.natom):
+            basis.append(sto3g_hydrogen(center=self.atom_coord(atm_id)))
+            nuclear_coor.append(self.atom_coord(atm_id))
 
-        # self.basis = basis
-        # self.nuclear_coor = nuclear_coor
-        # self.nao = self.nbas = len(basis)
-
-        atoms = self.atom_symbols()
-        atcoords = self.atom_coords()
-        atnums = self.atom_charges()
-
-        basis_dir = os.path.abspath(f'{pyqed.__file__}/../qchem/basis_set/')
-
-
-        if isinstance(self.basis, str):
-
-            basis_dict = parse_gbs(basis_dir + '/' + ALIAS[self.basis.replace('-','').lower()])
-            basis = make_contractions(basis_dict, atoms, atcoords, coord_types="p")
-        else:
-
-            raise NotImplementedError('Customized basis not supported yet.')
-
-        s, t, v, eri = build(basis, atcoords, self.atom_charges())
-
-        self.nao = len(basis)
-        self.overlap = s
-        self.hcore = t + v
-        self.eri = eri
-
+        self.basis = basis
+        self.nuclear_coor = nuclear_coor
+        self.nao = self.nbas = len(basis)
         return self
 
-    def nuc_grad(self):
-        return Gradient(self)
 
-    def electron_nuclear_attraction(self, atm_id, gradient=(1,2), argnums=0):
+    def nuclear_attraction(self, atm_id, gradient=(1,2), argnums=0):
 
         """calculate the nuclear-electron attraction and first-order and second-order derivative
 
@@ -839,17 +812,8 @@ class Molecule(qchem.Molecule):
 
 
     def overlap_integral(self, gradient=False):
+        pass
 
-        nao = self.nao
-
-        s = jnp.zeros((nao, nao))
-        for i in range(nao):
-            for j in range(i):
-                tmp = S(self.basis[i], self.basis[j])
-                s = s.at[i,j].set(tmp[0])
-        s = s + s.T
-        s = jnp.fill_diagonal(s, 1, inplace=False)
-        return s
 
     def electron_repulsion_integral(self):
         pass
@@ -857,121 +821,19 @@ class Molecule(qchem.Molecule):
     def nuclear_repulsion(self):
         pass
 
-def nuclear_repulsion(atcoords, atnums):
-    # Compute Nucleus-Nucleus repulsion
-    rab = jnp.triu(norm(atcoords[:, None]- atcoords, axis=-1))
-    at_charges = jnp.triu(atnums[:, None] * atnums)[jnp.where(rab > 0)]
-    nn_e = jnp.sum(at_charges / rab[rab > 0])
-    return nn_e
-
-def grad_nuc(mol, atmlst=None):
-    '''
-    Derivatives of nuclear repulsion energy wrt nuclear coordinates
-    '''
-    z = mol.atom_charges()
-    r = mol.atom_coords()
-    dr = r[:,None,:] - r
-    dist = np.linalg.norm(dr, axis=2)
-    diag_idx = np.diag_indices(z.size)
-    dist[diag_idx] = 1e100
-    rinv = 1./dist
-    rinv[diag_idx] = 0.
-    gs = np.einsum('i,j,ijx,ij->ix', -z, z, dr, rinv**3)
-    if atmlst is not None:
-        gs = gs[atmlst]
-    return gs
-
-class Gradient:
-    def __init__(self, mf_or_mol):
-        if isinstance(mf_or_mol, Molecule):
-            self.mol = mf_or_mol
-        else:
-            self.mol = mf_or_mol.mol
-
-        # self.mol = mf_or_mol
-
-        self.atom_coords = self.mol.atom_coords()
-
-
-    def point_charge(self, C):
-
-        dv = grad(electron_nuclear_attraction)
-        ddv = hessian(electron_nuclear_attraction)
-
-        for a in self.basis:
-            for b in self.basis:
-                v = 0.0
-                for ia, ca in enumerate(a.coefs):
-                    for ib, cb in enumerate(b.coefs):
-                        v += a.norm[ia]*b.norm[ib]*ca*cb*\
-                            dv(a.exps[ia],a.shell,a.origin,
-                            b.exps[ib],b.shell,b.origin,C)
-
-        return v
-
-
-
-
-    def electron_nuclear_attraction(self):
+class Gaussian:
+    def __init__(self, alpha, center, i=0, j=0, k=0, cartesian=True):
         """
+        Gaussian
         .. math::
-
-            F^I_{\mu \nu} = \langle \mu | \nabla V_{eN}(R) | \nu \rangle
-
-        Returns
-        -------
-        f : TYPE
-            DESCRIPTION.
-        g : TYPE
-            DESCRIPTION.
-
+            \Phi(x,y,z; \alpha,i,j,k)=\left({\frac {2\alpha }{\pi }}\right)^{3/4}\left[{\frac {(8\alpha )^{i+j+k}i!j!k!}{(2i)!(2j)!(2k)!}}]^{1/2}
+                    x^{i}y^{j}z^{k} e^{-\alpha (x^{2}+y^{2}+z^{2})}}
         """
-
-
-        R = self.atom_coords
-
-        dv = grad(electron_nuclear_attraction, argnums=-1)
-
-        f = vmap(dv, in_axes=[0, None])(self.x, R)
-
-        ddv = hessian(electron_nuclear_attraction, argnums=-1)
-        g = vmap(ddv, in_axes=[0, None])(self.x, R)
-
-        v = jnp.zeros((nao,nao))
-        for i in range(nao):
-            for j in range(i+1):
-                tmp = 0
-                for C in range(natom):
-                    tmp -= Z[C] * point_charge(basis[i], basis[j], coords[C])[0]
-
-                v = v.at[i,j].set(tmp)
-                if i != j:
-                    v = v.at[j,i].set(tmp)
-
-        return f, g
-
-    def nuclear_repulsion(self):
-        R = self.atom_coords
-        Z = self.mol.atom_charges()
-
-        v, dv = value_and_grad(nuclear_repulsion, argnums=0)(R, Z)
-
-        ddv = hessian(nuclear_repulsion, argnums=0)(R, Z)
-
-        return dv, ddv
-# class Gaussian:
-#     def __init__(self, alpha, center, i=0, j=0, k=0, cartesian=True):
-#         """
-#         Gaussian
-#         .. math::
-#             \Phi(x,y,z; \alpha,i,j,k)=\left({\frac {2\alpha }{\pi }}\right)^{3/4}\left[{\frac {(8\alpha )^{i+j+k}i!j!k!}{(2i)!(2j)!(2k)!}}]^{1/2}
-#                     x^{i}y^{j}z^{k} e^{-\alpha (x^{2}+y^{2}+z^{2})}}
-#         """
-#         self.center = center
-#         self.alpha = alpha
-#         self.i = i
-#         self.j = j
-#         self.k = k
+        self.center = center
+        self.alpha = alpha
+        self.i = i
+        self.j = j
+        self.k = k
 
 # class ContractedGaussian:
 #     def __init__(self,n,d,g):
@@ -1652,66 +1514,15 @@ def heh_pes():
 
     file.close()
 
-def build(basis, coords, Z, aosym=8):
-    nao = len(basis)
-    natom, _ = coords.shape
-
-    s = jnp.zeros((nao, nao))
-    for i in range(nao):
-        for j in range(i):
-            tmp = S(basis[i], basis[j])
-            s = s.at[i,j].set(tmp[0])
-    s = s + s.T
-    s = jnp.fill_diagonal(s, 1, inplace=False)
-
-
-    t = jnp.zeros((nao, nao))
-    for i in range(nao):
-        for j in range(i+1):
-            tmp = T(basis[i], basis[j])[0]
-            t = t.at[i,j].set(tmp)
-    t = t + t.T
-    for i in range(nao):
-        t = t.at[i,i].set(T(basis[i], basis[i])[0])
-
-
-    v = jnp.zeros((nao,nao))
-    for i in range(nao):
-        for j in range(i+1):
-            tmp = 0
-            for C in range(natom):
-                tmp -= Z[C] * point_charge(basis[i], basis[j], coords[C])[0]
-
-            v = v.at[i,j].set(tmp)
-            if i != j:
-                v = v.at[j,i].set(tmp)
-
-
-
-    eri = jnp.zeros((nao, nao, nao, nao))
-    for p in range(nao):
-        for q in range(nao):
-            for r in range(nao):
-                for _s in range(nao):
-                    eri = eri.at[p,q,r,_s].set(ERI(basis[p], basis[q], basis[r], basis[_s])[0])
-
-    return s, t, v, eri
 
 if __name__=="__main__":
 
     # from pyqed.qchem.mol import atomic_chain
-    from pyqed.qchem import RHF
+    # from pyqed import interval
 
-    mol = Molecule(atom='H 0 0 0.; H 0. 0 1.4', unit='bohr', basis='631g')
-    mol.build()
+    # mol = Molecule(atom='H 0 0 0.2; H 0.3 0 1', unit='bohr', basis='sto3g')
 
-    dv, ddv = mol.nuc_grad().nuclear_repulsion()
-
-    print(dv.shape, ddv.shape)
-    # print(mol.hcore)
-
-    # mol.RHF().run()
-
+    # basis = mol.build()
 
     # for i in range(mol.natom):
     #     v, f, g = mol.nuclear_attraction(atm_id=i, gradient=(1,2), argnums=0)
@@ -1726,11 +1537,11 @@ if __name__=="__main__":
     # Define atomic symbols and coordinates (i.e., basis function centers)
     atoms = ["H", "H"]
     atcoords = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-    # basis_dict = parse_gbs('../basis_set/sto-3g.1.gbs')
-
-    basis_dict = parse_gbs('../basis_set/6-31g.0.gbs')
-
+    basis_dict = parse_gbs('../basis_set/sto3g.0.gbs')
     basis = make_contractions(basis_dict, atoms, atcoords, 'c')
+
+    # print(basis)
+
 
     # # To obtain the total number of AOs we compute the cartesian components for each angular momentum
     # total_ao = 0
@@ -1756,44 +1567,51 @@ if __name__=="__main__":
 
     # basis = [a, b]
 
+    def build(basis, coords):
+        nao = len(basis)
+        natom, _ = coords.shape
 
+        s = np.eye(nao)
+        for i in range(nao):
+            for j in range(i):
+                s[i,j] = S(basis[i], basis[j])
+                s[j,i] = s[i,j]
 
-    # print(len(basis))
-    # build(basis, atcoords)
-    # nao = len(basis)
-    # natom, _ = atcoords.shape
+        t = np.zeros((nao, nao))
+        for i in range(nao):
+            for j in range(i+1):
+                t[i,j] = T(basis[i], basis[j])
+                if i != j: t[j,i] = t[i,j]
 
-    # print(nao)
+        v = np.zeros((nao,nao))
+        for i in range(nao):
+            for j in range(i+1):
+                for C in range(natom):
+                    v[i,j] -= point_charge(basis[i], basis[j], coords[C])
+                if i != j: v[j,i] = v[i,j]
 
-    # s = jnp.zeros((nao, nao))
+        eri = np.zeros((nao, nao, nao, nao))
+        for p in range(nao):
+            for q in range(nao):
+                for r in range(nao):
+                    for s in range(nao):
+                        eri[p,q,r,s] = ERI(basis[p], basis[q], basis[r], basis[s])
 
-    # for i in range(nao):
-    #     for j in range(i):
-    #         tmp = S(basis[i], basis[j])
-    #         s = s.at[i,j].set(tmp[0])
-    # s = s + s.T
-    # s = jnp.fill_diagonal(s, 1, inplace=False)
-    # print(s)
+        return s, t, v, eri
 
-    # print(S(basis[2], basis[1]))
-    from timeit import default_timer as timer
-    start = timer()
-    Z = [1,1]
-    s,t, v, eri = build(basis, atcoords, Z)
-    end = timer()
-    print(end - start)
-    print(t+v)
+    print(len(basis))
+    s,t, v, eri = build(basis, atcoords)
+    # print(t)
     # point_charge(a, a, myOrigin))
-    # print(eri)
+    print(eri)
 
 
-
-    # mol = qchem.Molecule(atom = [
+    # mol = Molecule(atom = [
     # ['H' , (0. , 0. , 0)],
     # ['H' , (0. , 0. , 1.)], ], basis='631g')
 
     # mol.build()
-    # print(mol.hcore)
+    # print(mol.eri)
     # natom = 8
     # z = np.linspace(-10, 10, natom)
     # print('interatomic distance = ', interval(z))

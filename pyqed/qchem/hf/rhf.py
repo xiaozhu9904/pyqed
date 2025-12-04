@@ -168,7 +168,7 @@ class RHF:
         # return get_hcore(self.mol)
         return self.mol.hcore
 
-    def get_hcore_mo(self):
+    def get_hcore_mo(self, mo_coeff=None):
         """
         get core Hamiltonian in canonical molecular orbitals
 
@@ -177,7 +177,11 @@ class RHF:
         ndarray.
 
         """
-        C = self.mo_coeff
+        if mo_coeff is None:
+            C = self.mo_coeff
+        else:
+            C = mo_coeff
+            
         return dag(C) @ self.mol.hcore @ C
 
     def get_eri_mo(self, mo_coeff=None, notation='chem'):
