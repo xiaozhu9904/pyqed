@@ -59,7 +59,7 @@ def h1e_for_cas(mf, ncas, ncore, mo_coeff=None):
 
 
 class CASCI:
-    def __init__(self, mf, ncas, nelecas, ncore=None, spin=None, spin_purification=False):
+    def __init__(self, mf, ncas, nelecas, ncore=None, spin=None):
         """
         Exact diagonalization (FCI) on the complete active space (CAS) by FCI or
         Jordan-Wigner transformation
@@ -137,7 +137,11 @@ class CASCI:
         self.SC1 = None # SlaterCondon rule 1
         self.eri_so = None # spin-orbital ERI
         
-        self.spin_purification = spin_purification
+        self.spin_purification = False
+        
+        # effective CAS Hamiltonian
+        self.h1e = None 
+        self.h2e = None 
         
 
     def get_SO_matrix(self, spin_flip=False, H1=None, H2=None):
@@ -399,7 +403,7 @@ class CASCI:
                     h2e[:, :, p, q, q, p] -= 0.5 * shift
                     h2e[:, :, p, p, q, q] -= 1./4 * shift 
             
-            # self.spin_purification = True 
+            self.spin_purification = True 
             
             return h1e, h2e 
             
@@ -409,7 +413,7 @@ class CASCI:
             raise NotImplementedError('Second-order spin panelty not implemented.')
 
 
-    def run(self, nstates=1, mo_coeff=None, method='ci', ci0=None):
+    def run(self, nstates=1, mo_coeff=None, method='ci', ci0=None, purify_spin=False, ss=None):
         """
         solve the full CI in the active space
 
@@ -467,9 +471,10 @@ class CASCI:
             
             # print(H1, H2)
             
-            if self.spin_purification:
+            if purify_spin:
                 # spin penalty
-                H1, H2 = self.fix_spin(H1, H2, ss=self.spin)
+                assert ss is not None
+                H1, H2 = self.fix_spin(H1, H2, ss=ss)
             
             
             self.hcore = H1 
@@ -1355,11 +1360,11 @@ if __name__ == "__main__":
 
 
     ncas, nelecas = (4,2)
-    mc = CASCI(mf2, ncas, nelecas, spin_purification=False)
+    mc = CASCI(mf2, ncas, nelecas)
     mc.run(3)
     
-    mc = CASCI(mf2, ncas, nelecas, spin_purification=True)
-    mc.run(3)
+    mc = CASCI(mf2, ncas, nelecas)
+    mc.run(3, purify_spin=True, ss=0)
 
 
     # casci.run()
