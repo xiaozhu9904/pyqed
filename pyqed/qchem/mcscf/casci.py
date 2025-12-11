@@ -1366,7 +1366,6 @@ if __name__ == "__main__":
     mc = CASCI(mf2, ncas, nelecas)
     mc.run(3, purify_spin=True, ss=0)
 
-
     # casci.run()
     # S = overlap(casci, casci2)
     # print(S)
