@@ -12,7 +12,7 @@ import logging
 from functools import reduce
 import numpy as np
 from scipy.linalg import eigh
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import eigsh, LinearOperator
 
 import sys
 from opt_einsum import contract
@@ -29,33 +29,242 @@ from pyqed.qchem.jordan_wigner.spinful import jordan_wigner_one_body, annihilate
 
 from pyqed.qchem.hf.rhf import ao2mo
 
-def h1e_for_cas(mf, ncas, ncore, mo_coeff=None):
-    '''CAS space one-electron hamiltonian
+from pyqed.qchem.mcscf.casci import h1e_for_cas, size_of_cas, spin_square
 
-    Args:
-        casci : a RHF object
+from numba import njit, prange
 
-    Returns:
-        A tuple, the first is the effective one-electron hamiltonian defined in CAS space,
-        the second is the electronic energy from core.
-    '''
-    if mo_coeff is None: mo_coeff = mf.mo_coeff
-    # if ncas is None: ncas = .ncas
-    # if ncore is None: ncore = casci.ncore
-    mo_core = mo_coeff[:,:ncore]
-    mo_cas = mo_coeff[:,ncore:ncore+ncas]
+@njit(nogil=True, parallel=True, cache=True, fastmath=True)
+def _compute_diag(H1, H2, Binary):
 
-    hcore = mf.get_hcore()
-    energy_core = mf.energy_nuc()
-    if mo_core.size == 0:
-        corevhf = 0
+    n_dets, _, n_mo = Binary.shape
+    
+
+    H1_diag_alpha = np.diag(H1[0])
+
+    H1_diag_beta = np.diag(H1[1])
+    
+    # pre caculate H2[p,p,q,q] 
+    H2_aa_ppqq = np.zeros((n_mo, n_mo))
+    H2_bb_ppqq = np.zeros((n_mo, n_mo))
+    H2_ab_ppqq = np.zeros((n_mo, n_mo))
+    H2_ba_ppqq = np.zeros((n_mo, n_mo))
+    
+    for p in range(n_mo):
+        for q in range(n_mo):
+            H2_aa_ppqq[p, q] = H2[0, 0, p, p, q, q]
+            H2_bb_ppqq[p, q] = H2[1, 1, p, p, q, q]
+            H2_ab_ppqq[p, q] = H2[0, 1, p, p, q, q]
+            H2_ba_ppqq[p, q] = H2[1, 0, p, p, q, q]
+    
+
+    H_diag = np.zeros(n_dets)
+    
+    for i in prange(n_dets):
+        # H1 diagonal part
+        for p in range(n_mo):
+            if Binary[i, 0, p]:
+                H_diag[i] += H1_diag_alpha[p]
+            if Binary[i, 1, p]:
+                H_diag[i] += H1_diag_beta[p]
+        
+        # H2 diagonal part
+        for p in range(n_mo):
+            if Binary[i, 0, p]:
+                for q in range(n_mo):
+                    if Binary[i, 0, q]:
+                        H_diag[i] += H2_aa_ppqq[p, q]/2
+                    if Binary[i, 1, q]:
+                        H_diag[i] += H2_ab_ppqq[p, q]/2
+            
+            if Binary[i, 1, p]:
+                for q in range(n_mo):
+                    if Binary[i, 1, q]:
+                        H_diag[i] += H2_bb_ppqq[p, q]/2
+                    if Binary[i, 0, q]:
+                        H_diag[i] += H2_ba_ppqq[p, q]/2
+    
+
+    
+    return H_diag
+
+@njit(nogil=True, parallel=True, cache=True, fastmath=True)
+def _compute_single_excitation(H1_spin, H2_same, H2_cross, a_t, a, ca, binary_complement):
+
+    n_exc = a_t.shape[0]
+    n_mo = H1_spin.shape[0]
+    H_result = np.zeros(n_exc)
+    
+    # pre-calculate H1[p,q]
+    H1_matrix = H1_spin
+    
+    for k in prange(n_exc):
+        h1_term = 0.0
+        h2_same_term = 0.0
+        h2_cross_term = 0.0
+        
+
+        for p in range(n_mo):
+            a_t_val = a_t[k, p]
+            if a_t_val == 0:
+                continue
+            for q in range(n_mo):
+                a_val = a[k, q]
+                if a_val == 0:
+                    continue
+                
+                # H1
+                h1_term += H1_matrix[p, q] * a_t_val * a_val
+                
+                # H2
+                for r in range(n_mo):
+                    ca_val = ca[k, r]
+                    bin_val = binary_complement[k, r]
+                    
+                    if ca_val != 0:
+                        h2_same_term += H2_same[p, q, r, r] * a_t_val * a_val * ca_val
+                    
+                    if bin_val != 0:
+                        h2_cross_term += H2_cross[p, q, r, r] * a_t_val * a_val * bin_val
+        
+        H_result[k] = -(h1_term + h2_same_term + h2_cross_term)
+    
+    return H_result
+
+@njit(nogil=True, parallel=True, cache=True, fastmath=True)
+def _compute_double_excitation(H2_tensor, at1, a1, at2, a2):
+
+    n_exc = at1.shape[0]
+    n_mo = H2_tensor.shape[0]
+    H_result = np.zeros(n_exc)
+    
+
+    for k in prange(n_exc):
+        val = 0.0
+        
+
+        p_indices = np.where(at1[k] != 0)[0]
+        q_indices = np.where(a1[k] != 0)[0]
+        r_indices = np.where(at2[k] != 0)[0]
+        s_indices = np.where(a2[k] != 0)[0]
+        
+
+        for p in p_indices:
+            at1_val = at1[k, p]
+            for q in q_indices:
+                a1_val = a1[k, q]
+                for r in r_indices:
+                    at2_val = at2[k, r]
+                    for s in s_indices:
+                        a2_val = a2[k, s]
+                        val += H2_tensor[p, q, r, s] * at1_val * a1_val * at2_val * a2_val
+        
+        H_result[k] = val
+    
+    return H_result
+
+
+
+def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
+
+    start_time = time.time()
+    
+    # slater-condon
+    I_A, J_A, a_t, a, I_B, J_B, b_t, b, ca, cb = SC1
+    I_AA, J_AA, aa_t, aa, I_BB, J_BB, bb_t, bb, I_AB, J_AB, ab_t, ab, ba_t, ba = SC2
+    
+    n_dets = Binary.shape[0]
+    n_mo = Binary.shape[2]
+    
+    # diagonal matrix element
+    diag_start = time.time()
+    H_diag = _compute_diag(H1, H2, Binary)
+    diag_time = time.time() - diag_start
+    
+    # single excitation
+    H_A = np.array([])
+    H_B = np.array([])
+    
+    if len(I_A) > 0:
+        single_start = time.time()
+
+        Binary_I_A_complement = Binary[I_A, 1]
+        
+
+        if a_t.ndim == 2:
+            H_A = _compute_single_excitation(
+                H1[0], H2[0, 0], H2[0, 1],
+                a_t, a, ca, Binary_I_A_complement
+            )
+        else:
+
+            H_A = np.zeros(len(I_A))
+            for i in range(len(I_A)):
+
+                pass
+        
+        single_alpha_time = time.time() - single_start
     else:
-        core_dm = np.dot(mo_core, mo_core.conj().T) * 2
-        corevhf = get_veff(mf.mol, core_dm)
-        energy_core += np.einsum('ij,ji', core_dm, hcore).real
-        energy_core += np.einsum('ij,ji', core_dm, corevhf).real * .5
-    h1eff = reduce(np.dot, (mo_cas.conj().T, hcore+corevhf, mo_cas))
-    return h1eff, energy_core
+        single_alpha_time = 0.0
+    
+    if len(I_B) > 0:
+        single_start = time.time()
+        Binary_I_B_complement = Binary[I_B, 0]
+        
+        if b_t.ndim == 2:
+            H_B = _compute_single_excitation(
+                H1[1], H2[1, 1], H2[1, 0],
+                b_t, b, cb, Binary_I_B_complement
+            )
+        
+        single_beta_time = time.time() - single_start
+    else:
+        single_beta_time = 0.0
+    
+    # double excitation
+    H_AA = np.array([])
+    H_BB = np.array([])
+    H_AB = np.array([])
+    
+    if len(I_AA) > 0:
+        double_start = time.time()
+
+        if isinstance(aa_t, np.ndarray) and aa_t.ndim == 3:
+
+            H_AA = _compute_double_excitation(
+                H2[0, 0], aa_t[0], aa[0], aa_t[1], aa[1]
+            )
+        else:
+
+            H_AA = _compute_double_excitation(H2[0, 0], aa_t, aa, aa_t, aa)
+        
+        double_aa_time = time.time() - double_start
+    else:
+        double_aa_time = 0.0
+    
+    if len(I_BB) > 0:
+        double_start = time.time()
+        if isinstance(bb_t, np.ndarray) and bb_t.ndim == 3:
+            H_BB = _compute_double_excitation(
+                H2[1, 1], bb_t[0], bb[0], bb_t[1], bb[1]
+            )
+        else:
+            H_BB = _compute_double_excitation(H2[1, 1], bb_t, bb, bb_t, bb)
+        
+        double_bb_time = time.time() - double_start
+    else:
+        double_bb_time = 0.0
+    
+    if len(I_AB) > 0:
+        double_start = time.time()
+        H_AB = _compute_double_excitation(H2[0, 1], ab_t, ab, ba_t, ba)
+        double_ab_time = time.time() - double_start
+    else:
+        double_ab_time = 0.0
+    
+    total_time = time.time() - start_time
+    
+    
+    return H_diag, H_A, H_B, H_AA, H_BB, H_AB
 
 
 class CASCI:
@@ -234,6 +443,7 @@ class CASCI:
         #     return H1, H2
         return H1, H2
 
+
     def natural_orbitals(self, dm, nco=None):
         natural_orb_occ, natural_orb_coeff = np.linalg.eigh(dm)
 
@@ -393,12 +603,14 @@ class CASCI:
         if ss == 0:
             # first-order spin penalty J. Phys. Chem. A 2022, 126, 12, 2050–2060
             # H' = H + J \hat{S}^2
-            norb = h1e[0].shape[0]
+            # nmo = h1e.shape[0]
+            ncas = self.ncas
 
-            h1e = [h + 3./4 * shift * np.eye(norb) for h in h1e]
 
-            for p in range(norb):
-                for q in range(norb):
+            h1e = [h + 3./4 * shift * np.eye(ncas) for h in h1e]
+
+            for p in range(ncas):
+                for q in range(ncas):
                     h2e[:, :, p, q, q, p] -= 0.5 * shift
                     h2e[:, :, p, p, q, q] -= 1./4 * shift
 
@@ -412,7 +624,7 @@ class CASCI:
             raise NotImplementedError('Second-order spin panelty not implemented.')
 
 
-    def run(self, nstates=1, mo_coeff=None, method='ci', ci0=None, purify_spin=False, ss=0, shift=0.2):
+    def run(self, nstates=1, mo_coeff=None, method='direct_ci', ci0=None, purify_spin=False, shift=0.2):
         """
         solve the full CI in the active space
 
@@ -443,76 +655,124 @@ class CASCI:
         # print('------------------------------\n')
         self.nstates = nstates
 
-        # if method == 'ci':
+        if method == 'ci':
 
-        # define the core and active space orbitals
-        if mo_coeff is None:
-            self.mo_coeff = self.mf.mo_coeff # use HF MOs
+            # define the core and active space orbitals
+            if mo_coeff is None:
+                self.mo_coeff = self.mf.mo_coeff # use HF MOs
+            else:
+                self.mo_coeff = mo_coeff
+
+            ncore = self.ncore
+            ncas = self.ncas
+
+            self.mo_core = self.mo_coeff[:,:ncore]
+            self.mo_cas = self.mo_coeff[:,ncore:ncore+ncas]
+
+            # FCI solver, more efficient than the JW solver
+
+            mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
+            binary = get_fci_combos(mo_occ = mo_occ)
+            self.binary = binary
+
+
+            # print('Number of determinants', binary.shape[0])
+
+            H1, H2 = self.get_SO_matrix()
+
+            if purify_spin:
+                logging.info('Purify spin by energy penalty')
+
+                # assert ss is not None
+                H1, H2 = self.fix_spin(H1, H2, ss=self.spin, shift=shift)
+
+
+            self.hcore = H1
+
+            SC1, SC2 = SlaterCondon(binary)
+
+            self.SC1 = SC1
+            self.SC2 = SC2
+            self.eri_so = H2
+
+            I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+
+            H_CI = CI_H(binary, H1, H2, SC1, SC2)
+
+
+            E, X = eigsh(H_CI, k=nstates, which='SA')
+
+        elif method == 'direct_ci':
+
+            # define the core and active space orbitals
+            if mo_coeff is None:
+                self.mo_coeff = self.mf.mo_coeff # use HF MOs
+            else:
+                self.mo_coeff = mo_coeff
+
+            ncore = self.ncore
+            ncas = self.ncas
+
+            self.mo_core = self.mo_coeff[:,:ncore]
+            self.mo_cas = self.mo_coeff[:,ncore:ncore+ncas]
+
+            # FCI solver, more efficient than the JW solver
+
+            mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
+            binary = get_fci_combos(mo_occ = mo_occ)
+            self.binary = binary
+
+
+            print('Number of determinants', binary.shape[0])
+
+            H1, H2 = self.get_SO_matrix()
+
+            if purify_spin:
+                logging.info('Purify spin by energy penalty')
+
+                # assert ss is not None
+                H1, H2 = self.fix_spin(H1, H2, ss=self.spin, shift=shift)
+
+
+            self.hcore = H1
+
+            SC1, SC2 = SlaterCondon(binary)
+
+            self.SC1 = SC1
+            self.SC2 = SC2
+            self.eri_so = H2
+
+            H_diag, H_A, H_B, H_AA, H_BB, H_AB = hamiltonian_matrix_elements(binary, H1, H2, SC1, SC2)
+
+            def mv(c):
+                return sigma(SC1, SC2, H_diag, H_A, H_B, H_AA, H_BB, H_AB, c)
+
+            H = LinearOperator((binary.shape[0], binary.shape[0]), matvec=mv)
+
+            E, X = eigsh(H, k=nstates, which='SA')
+
+
+
+        elif method == 'jw':
+
+
+            # exact diagonalization by JW transform
+
+            H = self.qubitization()
+            E, X = eigsh(H, k=nstates, which='SA')
+
         else:
-            self.mo_coeff = mo_coeff
-
-        ncore = self.ncore
-        ncas = self.ncas
-
-        self.mo_core = self.mo_coeff[:,:ncore]
-        self.mo_cas = self.mo_coeff[:,ncore:ncore+ncas]
-
-        # FCI solver, more efficient than the JW solver
-
-        mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
-        binary = get_fci_combos(mo_occ = mo_occ)
-        self.binary = binary
-
-        # print('Number of determinants', binary.shape[0])
-
-        H1, H2 = self.get_SO_matrix()
-
-        if purify_spin:
-            logging.info('Purify spin by energy penalty')
-
-            assert ss is not None
-            H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
-
-
-        self.hcore = H1
-
-        SC1, SC2 = SlaterCondon(binary)
-
-        self.SC1 = SC1
-        self.SC2 = SC2
-        self.eri_so = H2
-
-        I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
-
-        # print(binary[I_A[0]], binary[J_A[0]])
-
-        H_CI = CI_H(binary, H1, H2, SC1, SC2)
-
-
-        E, X = eigsh(H_CI, k=nstates, which='SA')
-
+            raise ValueError("There is no {} solver for CASCI. Use 'ci' or 'jw'".format(method))
 
         # nuclear repulsion energy is included in Ecore
         self.e_tot = E + self.e_core
         self.ci = [X[:, n] for n in range(nstates)]
 
-        for i in range(nstates):
-            ss = spin_square(*self.make_rdm12(i))
-            print("CASCI Root {}  E = {:.10f}  S^2 = {:.6f}".format(i, self.e_tot[i], ss))
+        # for i in range(nstates):
+        #     ss = spin_square(*self.make_rdm12(i))
+        #     print("CASCI Root {}  E = {:.10f}  S^2 = {:.6f}".format(i, self.e_tot[i], ss))
 
         return self
-
-    def exact_diag(self, nstates=1, mo_coeff=None, ci0=None):
-        # elif method == 'jw':
-
-        # exact diagonalization by JW transform
-
-        H = self.qubitization()
-        E, X = eigsh(H, k=nstates, which='SA')
-
-    # else:
-    #     raise ValueError("There is no {} solver for CASCI. Use 'ci' or 'jw'".format(method))
-        return E, X
 
     def make_rdm1_contract(self, state_id, h1e=None, representation='ao'):
         """
@@ -768,47 +1028,117 @@ class CASCI:
         raise NotImplementedError('TDM not implemented')
 
 
-# def get_SO_matrix(mo_coeff, eri, spin_flip=False, H1=None, H2=None):
-#     """
-#     Given a rhf object get Spin-Orbit Matrices
-
-#     SF: bool
-#         spin-flip
-#     """
-
-#     Ca, Cb = mo_coeff
-
-#     H, energy_core = h1e_for_cas(mf, ncas=ncas, ncore=ncore, \
-#                                  mo_coeff=mo_coeff)
-
-#     # self.e_core = energy_core
 
 
 
-#     eri = mf.eri  # (pq||rs) 1^* 1 2^* 2
+def sigma(SC1, SC2, H_diag, H_A, H_B, H_AA, H_BB, H_AB, c):
+    """
+    Avoid explicitly construct the CI Hamiltonian Matrix
 
-#     ### compute SO ERIs (MO)
-#     eri_aa = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
+    math: Hc = sigma
 
-#     # physicts notation <pq|rs>
-#     # eri_aa = contract('ip, jq, ij, ir, js -> pqrs', Ca.conj(), Ca.conj(), eri, Ca, Ca)
+    GIVEN: H1 (1-body Hamtilonian)
+    H2 (2-body Hamtilonian)
 
-#     eri_aa -= eri_aa.swapaxes(1,3)
+    SC1 (1-body Slater-Condon Rules)
+    SC2 (2-body Slater-Condon Rules)
 
-#     eri_bb = eri_aa.copy()
+    Return
+    ======
+    HCI: CI Hamiltonian
+    """
+    I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
+    I_AA, J_AA, aa_t, aa, I_BB, J_BB, bb_t, bb, I_AB, J_AB, ab_t, ab, ba_t, ba = SC2
 
-#     eri_ab = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Cb.conj(), Cb)
-#     eri_ba = contract('ip, jq, ijkl, kr, ls -> pqrs', Cb.conj(), Cb, eri, Ca.conj(), Ca)
+    # # sum of MO energies I: configuration index, S: spin index, p: MO index
+    # H_diag = np.einsum("Spp, ISp -> I", H1, Binary, optimize=True)
+
+    # # ERI
+    # H_diag += np.einsum("STppqq, ISp, ITq -> I", H2, Binary, Binary, optimize=True)/2
+    # # print('Hdiag',H_diag.shape)
+    sigma_vec = H_diag * c
+    # print('sigma_vec shape', sigma_vec.shape)
+
+    ## Rule 1
+    # H_A = -np.einsum("pq, Kp, Kq -> K", H1[0], a_t, a, optimize=True)
+    # H_A -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[0,0], a_t, a, ca, optimize=True)
+    # H_A -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[0,1], a_t, a, Binary[I_A,1],
+    # optimize=True)
+
+    # print('HA',H_A.shape)
+
+    # for idx, (i,j) in enumerate(zip(I_A, J_A)):
+    #     sigma_vec[i] += H_A[idx] * c[j]
+    c_J_A = c[J_A]
+    contributions_A = H_A * c_J_A
+    if len(I_A) > 1000:
+        unique_I = np.unique(I_A)
+        bincount_result = np.bincount(I_A, weights=contributions_A, minlength=len(sigma_vec))
+        sigma_vec += bincount_result
+    else:
+        np.add.at(sigma_vec, I_A, contributions_A)
+    # H_B = -np.einsum("pq, Kp, Kq -> K", H1[1], b_t, b, optimize=True)
+    # H_B -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[1,1], b_t, b, cb, optimize=True)
+    # H_B -= np.einsum("pqrr, Kp, Kq, Kr -> K", H2[1,0], b_t, b, Binary[I_B,0],
+    # optimize=True)
+
+    # for idx, (i,j) in enumerate(zip(I_B, J_B)):
+    #     sigma_vec[i] += H_B[idx] * c[j]
+    c_J_B = c[J_B]
+    contributions_B = H_B * c_J_B
+    if len(I_B) > 1000:
+        bincount_result = np.bincount(I_B, weights=contributions_B, minlength=len(sigma_vec))
+        sigma_vec += bincount_result
+    else:
+        np.add.at(sigma_vec, I_B, contributions_B)
+
+    if len(I_AA) > 0:
+    ## Rule 2
+        # H_AA = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[0,0], aa_t[0], aa[0],
+        # aa_t[1], aa[1], optimize=True)
+        # for idx, (i,j) in enumerate(zip(I_AA, J_AA)):
+        #     sigma_vec[i] += H_AA[idx] * c[j]
+        c_J_AA = c[J_AA]
+        contributions_AA = H_AA * c_J_AA
+        if len(I_AA) > 1000:
+            bincount_result = np.bincount(I_AA, weights=contributions_AA, minlength=len(sigma_vec))
+            sigma_vec += bincount_result
+        else:
+            np.add.at(sigma_vec, I_AA, contributions_AA)
+
+    if len(I_BB) > 0:
+        # H_BB = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[1,1], bb_t[0], bb[0],
+        # bb_t[1], bb[1], optimize=True)
+        # for idx, (i,j) in enumerate(zip(I_BB, J_BB)):
+        #     sigma_vec[i] += H_BB[idx] * c[j]
+        c_J_BB = c[J_BB]
+        contributions_BB = H_BB * c_J_BB
+        if len(I_BB) > 1000:
+            bincount_result = np.bincount(I_BB, weights=contributions_BB, minlength=len(sigma_vec))
+            sigma_vec += bincount_result
+        else:
+            np.add.at(sigma_vec, I_BB, contributions_BB)
+
+    # H_AB = np.einsum("pqrs, Kp, Kq, Kr, Ks -> K", H2[0,1], ab_t, ab, ba_t, ba,
+    #     optimize=True)
+    # for idx, (i,j) in enumerate(zip(I_AB, J_AB)):
+    #     sigma_vec[i] += H_AB[idx] * c[j]
+    if len(I_AB) > 0:
+        c_J_AB = c[J_AB]
+        contributions_AB = H_AB * c_J_AB
+        if len(I_AB) > 1000:
+            bincount_result = np.bincount(I_AB, weights=contributions_AB, minlength=len(sigma_vec))
+            sigma_vec += bincount_result
+        else:
+            np.add.at(sigma_vec, I_AB, contributions_AB)
+
+    # print('sigma_shape',sigma_vec.shape)
+
+    return sigma_vec
 
 
-#     H2 = np.stack(( np.stack((eri_aa, eri_ab)), np.stack((eri_ba, eri_bb)) ))
 
-#     H1 = [H, H]
 
-#     if spin_flip:
-#         raise NotImplementedError('Spin-flip matrix elements not implemented yet')
-
-#     return H1, H2
 
 # def fcisolver(mo_occ):
 #     # mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
@@ -830,80 +1160,8 @@ class CASCI:
 
 #     return E, X
 
-def size_of_cas(norb, nelec, basis='sd', S=0):
-    """
-    size of CAS
-
-    Eq. 91, 92 Chem Rev 2012, 112, 108
-
-    Parameters
-    ----------
-    norb : TYPE
-        DESCRIPTION.
-    nelec : TYPE
-        DESCRIPTION.
-    basis : TYPE, optional
-        DESCRIPTION. The default is 'sd'.
-    S : TYPE, optional
-        DESCRIPTION. The default is 0.
-
-    Returns
-    -------
-    TYPE
-        DESCRIPTION.
-
-    """
-    from math import comb
-    # if isinstance(norb, int): norb = [norb, ] * 2
-    if isinstance(nelec, int): nelec = [nelec, ] * 2
 
 
-    # norb_a, norb_b = norb
-    na, nb = nelec
-    if basis == 'sd':
-        return comb(norb, na) * comb(norb, nb)
-    elif basis == 'csf':
-        N = na + nb
-        return (2*S+1)/(norb + 1) * comb(norb+1, N//2 - S) * comb(norb+1, N//2+S+1)
-
-def spin_square(dm1, dm2):
-    """
-
-    Compute the total spin S^2, require 2e RDM
-
-    Ref:
-        J. Chem. Theory Comput. 2021, 17, 5684−5703
-
-
-    For a single SO,
-    .. math::
-
-            S_i^2 = \frac{3}{4} (E_ii - e_{ii,ii})
-            S_i \cdot S_j = -frac{1}{2} (e_{ij,ji} + \frac{1}{2} e_{ii, jj}), j \ne i
-
-    where E_{ij}, e_{ijkl} are 1 and 2e RDMs.
-
-    Parameters
-    ----------
-    dm1 : TYPE
-        DESCRIPTION.
-    dm2 : TYPE
-        DESCRIPTION.
-
-    Returns
-    -------
-    None.
-
-    """
-    spin_square = (0.75*np.einsum("ii", dm1)
-               - 0.5*np.einsum("ijji", dm2)
-               - 0.25*np.einsum("iijj", dm2))
-
-    return spin_square
-
-# def ss_matrix():
-
-#     ss = CI_H(binary, H1, H2, SC1, SC2)
 
 def contract_with_tdm1(cibra, ciket, binary, SC1, h1e):
     """
@@ -1311,7 +1569,7 @@ def overlap(cibra, ciket, s=None):
 if __name__ == "__main__":
     from pyqed import Molecule
     from pyqed.qchem.ci.cisd import overlap
-
+    import time
 
     # mol = Molecule(atom = [
     # ['Li' , (0. , 0. , 0)],
@@ -1348,9 +1606,21 @@ if __name__ == "__main__":
     #     casci.e_tot
 
     #### test overlap
+
+    start_time = time.time()
+
     mol2 = Molecule(atom = [
-    ['H' , (0. , 0. , 0)],
-    ['H' , (0. , 0. , 1.4)], ])
+        ['H' , (0. , 0. , 0)],
+        ['H' , (0. , 0. , 1)],
+        ['H' , (0. , 0. , 2)],
+        ['H' , (0. , 0. , 3)],
+        ['H' , (0. , 0. , 4)],
+        ['H' , (0. , 0. , 5)]])
+
+    # mol2 = Molecule(atom = [
+    #     ['H' , (0. , 0. , 0)],
+    #     ['Li' , (0. , 0. , 1.4)]])
+
     mol2.basis = '631g'
 
     # mol.unit = 'b'
@@ -1359,12 +1629,17 @@ if __name__ == "__main__":
     mf2 = mol2.RHF().run()
 
 
-    ncas, nelecas = (4,2)
+    ncas, nelecas = (8,6)
+    # from pyqed.qchem import mcscf
     mc = CASCI(mf2, ncas, nelecas)
-    mc.run(3)
+    mc.run(3, method='direct_ci')
 
     # mc = CASCI(mf2, ncas, nelecas)
-    mc.run(3, mo_coeff=mf2.mo_coeff, purify_spin=True, ss=0, shift=0.3)
+    # mc.run(3, mo_coeff=mf2.mo_coeff, purify_spin=True, shift=0.3)
+
+    end_time = time.time()
+    execution_time = end_time - start_time
+    print(f"time: {execution_time:.6f} seconds")
 
     # casci.run()
     # S = overlap(casci, casci2)

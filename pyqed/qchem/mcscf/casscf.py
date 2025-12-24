@@ -7,7 +7,7 @@ Created on Sun Nov 16 22:07:30 2025
 """
 import numpy as np
 from scipy.linalg import eigh
-from pyqed.qchem.mcscf.casci import CASCI
+from pyqed.qchem.mcscf.direct_ci import CASCI
 from opt_einsum import contract
 
 from pyqed.qchem.optimize import minimize
@@ -33,7 +33,7 @@ class CASSCF(CASCI):
         self.nstates = 1
 
 
-    def run(self, purify_spin=True, shift=0.2):
+    def run(self, purify_spin=False, shift=0.2):
         mf = self.mf
 
         # canonical molecular orbs
@@ -172,7 +172,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=50, tol=1e-6, **kwarg
 
         mo_coeff = C0 @ U
 
-        print('MO', mo_coeff.shape)
+        # print('MO', mo_coeff.shape)
 
         mc.run(mo_coeff=mo_coeff, **kwargs)
 
@@ -195,7 +195,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=50, tol=1e-6, **kwarg
         k += 1
 
     if not converged:
-        print('Max macro steps reached. CASSCF not converged.')
+        raise RuntimeError('Max macro steps reached. CASSCF not converged.')
 
     return mo_coeff, mc
 
@@ -249,7 +249,7 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         k += 1
 
     if not converged:
-        print('Max macro steps reached. CASSCF not converged.')
+        raise RuntimeError('Max macro steps reached. CASSCF not converged.')
 
     return mo_coeff, mc
 
@@ -341,14 +341,14 @@ if __name__=='__main__':
 
 
     from pyqed import Molecule
-    from pyqed.qchem.mcscf import CASCI
+    from pyqed.qchem.mcscf.direct_ci import CASCI
 
-    mol = Molecule(atom='H 0 0 0; H 0 0 1.4', unit='b', basis='631g')
+    mol = Molecule(atom='Li 0 0 0; H 0 0 1.4', unit='b', basis='631g')
     mol.build()
 
     mf = mol.RHF().run()
 
-    mc = CASSCF(mf, ncas=4, nelecas=2)
-    nstates = 2
-    mc.state_average(weights = np.ones(nstates)/nstates)
-    mc.run(purify_spin=True, shift=0.5)
+    mc = CASSCF(mf, ncas=4, nelecas=4)
+    nstates = 1
+    # mc.state_average(weights = np.ones(nstates)/nstates)
+    mc.run(purify_spin=False)
