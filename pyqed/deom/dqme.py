@@ -16,7 +16,7 @@ import numpy as np
 
 class DQME:
     """
-    dissipaton quantum master equation, an exact quasiparticle representation of
+    dissipaton quantum master equation for fermion bath, an exact quasiparticle representation of
     the HEOM
     """
     def __init__(self, H):
@@ -161,7 +161,7 @@ def rem(rho):
 
 dt = 0.02
 ti = 0
-tf = 20
+tf = 2
 N = int((tf - ti) / dt)
 dt2 = dt / 2
 dt6 = dt / 6

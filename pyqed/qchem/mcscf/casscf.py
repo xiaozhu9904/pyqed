@@ -7,7 +7,7 @@ Created on Sun Nov 16 22:07:30 2025
 """
 import numpy as np
 from scipy.linalg import eigh
-from pyqed.qchem.mcscf.direct_ci import CASCI
+from pyqed.qchem.mcscf.casci import CASCI
 from opt_einsum import contract
 
 from pyqed.qchem.optimize import minimize
@@ -33,7 +33,7 @@ class CASSCF(CASCI):
         self.nstates = 1
 
 
-    def run(self, purify_spin=False, shift=0.2):
+    def run(self):
         mf = self.mf
 
         # canonical molecular orbs
@@ -47,7 +47,19 @@ class CASSCF(CASCI):
         nelecas = self.nelecas
 
         mc = CASCI(mf, ncas=ncas, nelecas=nelecas)
-        mc.run(nstates, purify_spin=purify_spin, shift=shift)
+        # spin 
+        mc.spin_purification = self.spin_purification
+        mc.ss = self.ss 
+        mc.shift = self.shift 
+        
+        # shift = self.shift 
+        # purify_spin = self.spin_purification
+        
+        
+        # if self.spin_purification:
+        #     mc.fix_spin(ss=self.ss, shift=self.shift)
+            
+        mc.run(nstates)
 
 
         # matrix elements in CMOs
@@ -59,15 +71,15 @@ class CASSCF(CASCI):
             U0[i, i] = 1.
 
         if nstates == 1:
-            C, mc = kernel(mc, U0, nelecas, ncas, C0, h1e, eri, purify_spin=purify_spin, shift=shift)
+            C, mc = kernel(mc, U0, nelecas, ncas, C0, h1e, eri)
 
         elif nstates > 1:
 
             if self.weights is None:
                 raise ValueError('State weights not provided.')
 
-            C, mc = kernel_state_average(mc, self.weights, U0, nelecas, ncas,
-                                         C0, h1e, eri, purify_spin=purify_spin, shift=shift)
+            C, mc = kernel_state_average(mc, weights=self.weights, U0=U0, nelecas=nelecas, ncas=ncas,
+                                         C0=C0, h1e=h1e, eri=eri)
 
         self.mo_coeff = C
         self.e_tot = mc.e_tot
@@ -162,6 +174,8 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=50, tol=1e-6, **kwarg
     #     U0[i, i] = 1
 
     U, E = minimize(energy, U0, args=(h1e, eri, dm1, dm2))
+    
+    print('U shape', U.shape, C0.shape)
 
     k = 0
 
@@ -172,7 +186,7 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=50, tol=1e-6, **kwarg
 
         mo_coeff = C0 @ U
 
-        # print('MO', mo_coeff.shape)
+        print('MO', mo_coeff.shape)
 
         mc.run(mo_coeff=mo_coeff, **kwargs)
 
@@ -222,6 +236,9 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
     while k < max_cycles:
 
         mo_coeff = C0 @ U
+        
+        # print('mo ', mo_coeff.shape)
+        
         mc.run(nstates, mo_coeff=mo_coeff, **kwargs)
 
         eAve = sum(weights * mc.e_tot)
@@ -341,14 +358,15 @@ if __name__=='__main__':
 
 
     from pyqed import Molecule
-    from pyqed.qchem.mcscf.direct_ci import CASCI
+    # from pyqed.qchem.mcscf.direct_ci import CASCI
 
     mol = Molecule(atom='Li 0 0 0; H 0 0 1.4', unit='b', basis='631g')
     mol.build()
 
     mf = mol.RHF().run()
 
-    mc = CASSCF(mf, ncas=4, nelecas=4)
-    nstates = 1
+    mc = CASSCF(mf, ncas=4, nelecas=2)
+    # nstates = 3
     # mc.state_average(weights = np.ones(nstates)/nstates)
-    mc.run(purify_spin=False)
+    mc.fix_spin(ss=0, shift=0.2)
+    mc.run()

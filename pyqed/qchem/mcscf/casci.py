@@ -117,6 +117,10 @@ class CASCI:
         if spin is None:
             spin = mf.mol.spin
         self.spin = spin
+        self.ss = None 
+        self.shift = None 
+        self.spin_purification = False
+    
 
         self.mf = mf
         # self.chemical_potential = mu
@@ -137,7 +141,6 @@ class CASCI:
         self.SC1 = None # SlaterCondon rule 1
         self.eri_so = self.h2e_cas = None # spin-orbital ERI in the active space
 
-        self.spin_purification = False
 
         # effective CAS Hamiltonian
         self.h1e = None
@@ -358,7 +361,7 @@ class CASCI:
         self.H = H
         return H
 
-    def fix_spin(self, h1e, h2e, s=None, ss=None, shift=0.2):
+    def fix_spin(self, s=None, ss=0, shift=0.2):
         """
         fix the spin by energy penalty
 
@@ -388,23 +391,29 @@ class CASCI:
             if ss is None:
                 ss = s * (s+1)
             else:
+                # assert ss == s * (s+1)
+
                 raise ValueError('s and ss cannot be specified simulaneously.')
 
         if ss == 0:
             # first-order spin penalty J. Phys. Chem. A 2022, 126, 12, 2050–2060
             # H' = H + J \hat{S}^2
-            norb = h1e[0].shape[0]
+            # norb = h1e[0].shape[0]
+            
+            # ncas = self.ncas
 
-            h1e = [h + 3./4 * shift * np.eye(norb) for h in h1e]
+            # h1e = [h + 3./4 * shift * np.eye(ncas) for h in h1e]
 
-            for p in range(norb):
-                for q in range(norb):
-                    h2e[:, :, p, q, q, p] -= 0.5 * shift
-                    h2e[:, :, p, p, q, q] -= 1./4 * shift
+            # for p in range(ncas):
+            #     for q in range(ncas):
+            #         h2e[:, :, p, q, q, p] -= 0.5 * shift
+            #         h2e[:, :, p, p, q, q] -= 1./4 * shift
 
             self.spin_purification = True
+            self.ss = 0
+            self.shift = shift 
 
-            return h1e, h2e
+            return self
 
 
         else:
@@ -412,9 +421,9 @@ class CASCI:
             raise NotImplementedError('Second-order spin panelty not implemented.')
 
 
-    def run(self, nstates=1, mo_coeff=None, method='ci', ci0=None, purify_spin=False, ss=0, shift=0.2):
+    def run(self, nstates=1, mo_coeff=None, method='ci', ci0=None):
         """
-        solve the full CI in the active space
+        solve the full CI in the active space, more efficient than the JW solver
 
         Parameters
         ----------
@@ -441,54 +450,77 @@ class CASCI:
         # print('------------------------------')
         # print("             CASCI              ")
         # print('------------------------------\n')
-        self.nstates = nstates
+        # self.nstates = nstates
 
         # if method == 'ci':
 
+        ncore = self.ncore
+        ncas = self.ncas
+        
         # define the core and active space orbitals
         if mo_coeff is None:
             self.mo_coeff = self.mf.mo_coeff # use HF MOs
+            # self.mo_core = self.mo_coeff[:, :ncore]
+            # self.mo_cas = self.mo_coeff[:, ncore:ncore+ncas]
+            
         else:
             self.mo_coeff = mo_coeff
+            
+        self.mo_core = self.mo_coeff[:, :ncore]
+        self.mo_cas = self.mo_coeff[:, ncore:ncore+ncas]
 
-        ncore = self.ncore
-        ncas = self.ncas
+        # print('cas', ncore, ncas, self.mo_cas.shape)
+        
 
-        self.mo_core = self.mo_coeff[:,:ncore]
-        self.mo_cas = self.mo_coeff[:,ncore:ncore+ncas]
-
-        # FCI solver, more efficient than the JW solver
-
-        mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
-        binary = get_fci_combos(mo_occ = mo_occ)
-        self.binary = binary
+        if self.binary is None:
+            mo_occ = [self.mf.mo_occ[ncore: ncore+ncas]//2, ] * 2
+            binary = get_fci_combos(mo_occ = mo_occ)
+            self.binary = binary
+        else:
+            binary = self.binary 
 
         # print('Number of determinants', binary.shape[0])
+        
+        # effective hamiltonian in the CAS
+        h1e, h2e = self.get_SO_matrix()
+        
+        # print('h1e shape', h1e[0].shape)
 
-        H1, H2 = self.get_SO_matrix()
-
-        if purify_spin:
+        if self.spin_purification:
+            
             logging.info('Purify spin by energy penalty')
 
-            assert ss is not None
-            H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
+            # if self.shift is not None:
+            # H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
+            shift = self.shift 
+            
+            h1e = [h + 3./4 * shift * np.eye(ncas) for h in h1e]
+
+            for p in range(ncas):
+                for q in range(ncas):
+                    h2e[0, 0, p, q, q, p] -=  0.5 * shift
+                    h2e[1, 1, p, q, q, p] -=  0.5 * shift
+                    h2e[0, 1, p, q, q, p] -=  0.5 * shift
+                    h2e[1, 0, p, q, q, p] -=  0.5 * shift
+
+                    h2e[0, 0, p, p, q, q] -= 0.25 * shift
+                    h2e[1, 1, p, p, q, q] -= 0.25 * shift
 
 
-        self.hcore = H1
+
+        self.hcore = h1e
+        self.eri_so = h2e
+
 
         SC1, SC2 = SlaterCondon(binary)
 
         self.SC1 = SC1
         self.SC2 = SC2
-        self.eri_so = H2
 
         I_A, J_A, a_t , a, I_B, J_B, b_t , b, ca, cb = SC1
 
-        # print(binary[I_A[0]], binary[J_A[0]])
 
-        H_CI = CI_H(binary, H1, H2, SC1, SC2)
-
-
+        H_CI = CI_H(binary, h1e, h2e, SC1, SC2)
         E, X = eigsh(H_CI, k=nstates, which='SA')
 
 
@@ -1349,7 +1381,7 @@ if __name__ == "__main__":
 
     #### test overlap
     mol2 = Molecule(atom = [
-    ['H' , (0. , 0. , 0)],
+    ['Li' , (0. , 0. , 0)],
     ['H' , (0. , 0. , 1.4)], ])
     mol2.basis = '631g'
 
@@ -1359,12 +1391,15 @@ if __name__ == "__main__":
     mf2 = mol2.RHF().run()
 
 
-    ncas, nelecas = (4,2)
+    ncas, nelecas = (5,4)
     mc = CASCI(mf2, ncas, nelecas)
-    mc.run(3)
+    mc.run(5)
+    
+    print('core ', mc.ncore)
 
     # mc = CASCI(mf2, ncas, nelecas)
-    mc.run(3, mo_coeff=mf2.mo_coeff, purify_spin=True, ss=0, shift=0.3)
+    mc.fix_spin(ss=0, shift=0.2)
+    mc.run(5)
 
     # casci.run()
     # S = overlap(casci, casci2)

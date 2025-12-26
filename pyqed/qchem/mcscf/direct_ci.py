@@ -166,7 +166,6 @@ def _compute_double_excitation(H2_tensor, at1, a1, at2, a2):
 
 def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
 
-    start_time = time.time()
     
     # slater-condon
     I_A, J_A, a_t, a, I_B, J_B, b_t, b, ca, cb = SC1
@@ -176,16 +175,15 @@ def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
     n_mo = Binary.shape[2]
     
     # diagonal matrix element
-    diag_start = time.time()
+
     H_diag = _compute_diag(H1, H2, Binary)
-    diag_time = time.time() - diag_start
+
     
     # single excitation
     H_A = np.array([])
     H_B = np.array([])
     
     if len(I_A) > 0:
-        single_start = time.time()
 
         Binary_I_A_complement = Binary[I_A, 1]
         
@@ -202,12 +200,12 @@ def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
 
                 pass
         
-        single_alpha_time = time.time() - single_start
-    else:
-        single_alpha_time = 0.0
+        # single_alpha_time = time.time() - single_start
+    # else:
+    #     single_alpha_time = 0.0
     
     if len(I_B) > 0:
-        single_start = time.time()
+        # single_start = time.time()
         Binary_I_B_complement = Binary[I_B, 0]
         
         if b_t.ndim == 2:
@@ -216,9 +214,9 @@ def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
                 b_t, b, cb, Binary_I_B_complement
             )
         
-        single_beta_time = time.time() - single_start
-    else:
-        single_beta_time = 0.0
+        # single_beta_time = time.time() - single_start
+    # else:
+    #     single_beta_time = 0.0
     
     # double excitation
     H_AA = np.array([])
@@ -226,7 +224,7 @@ def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
     H_AB = np.array([])
     
     if len(I_AA) > 0:
-        double_start = time.time()
+        # double_start = time.time()
 
         if isinstance(aa_t, np.ndarray) and aa_t.ndim == 3:
 
@@ -237,12 +235,12 @@ def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
 
             H_AA = _compute_double_excitation(H2[0, 0], aa_t, aa, aa_t, aa)
         
-        double_aa_time = time.time() - double_start
-    else:
-        double_aa_time = 0.0
+        # double_aa_time = time.time() - double_start
+    # else:
+    #     double_aa_time = 0.0
     
     if len(I_BB) > 0:
-        double_start = time.time()
+        # double_start = time.time()
         if isinstance(bb_t, np.ndarray) and bb_t.ndim == 3:
             H_BB = _compute_double_excitation(
                 H2[1, 1], bb_t[0], bb[0], bb_t[1], bb[1]
@@ -250,19 +248,17 @@ def hamiltonian_matrix_elements(Binary, H1, H2, SC1, SC2):
         else:
             H_BB = _compute_double_excitation(H2[1, 1], bb_t, bb, bb_t, bb)
         
-        double_bb_time = time.time() - double_start
-    else:
-        double_bb_time = 0.0
+    #     double_bb_time = time.time() - double_start
+    # else:
+    #     double_bb_time = 0.0
     
     if len(I_AB) > 0:
-        double_start = time.time()
+        # double_start = time.time()
         H_AB = _compute_double_excitation(H2[0, 1], ab_t, ab, ba_t, ba)
-        double_ab_time = time.time() - double_start
-    else:
-        double_ab_time = 0.0
-    
-    total_time = time.time() - start_time
-    
+    #     double_ab_time = time.time() - double_start
+    # else:
+    #     double_ab_time = 0.0
+        
     
     return H_diag, H_A, H_B, H_AA, H_BB, H_AB
 
@@ -603,14 +599,18 @@ class CASCI:
         if ss == 0:
             # first-order spin penalty J. Phys. Chem. A 2022, 126, 12, 2050–2060
             # H' = H + J \hat{S}^2
-            # nmo = h1e.shape[0]
-            ncas = self.ncas
+            
+            norb = h1e[0].shape[0] # number of active space orbitals
+            assert(norb == self.ncas)
+            
+            ncore = self.ncore 
+            
+            print('number of core orbitals = ', ncore)
 
+            h1e = [h + (3./4  -  ncore) * shift * np.eye(norb) for h in h1e]
 
-            h1e = [h + 3./4 * shift * np.eye(ncas) for h in h1e]
-
-            for p in range(ncas):
-                for q in range(ncas):
+            for p in range(norb):
+                for q in range(norb):
                     h2e[:, :, p, q, q, p] -= 0.5 * shift
                     h2e[:, :, p, p, q, q] -= 1./4 * shift
 
@@ -624,7 +624,7 @@ class CASCI:
             raise NotImplementedError('Second-order spin panelty not implemented.')
 
 
-    def run(self, nstates=1, mo_coeff=None, method='direct_ci', ci0=None, purify_spin=False, shift=0.2):
+    def run(self, nstates=1, mo_coeff=None, method='direct_ci', ci0=None, purify_spin=False, ss=0, shift=0.2):
         """
         solve the full CI in the active space
 
@@ -684,7 +684,7 @@ class CASCI:
                 logging.info('Purify spin by energy penalty')
 
                 # assert ss is not None
-                H1, H2 = self.fix_spin(H1, H2, ss=self.spin, shift=shift)
+                H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
 
 
             self.hcore = H1
@@ -728,10 +728,11 @@ class CASCI:
             H1, H2 = self.get_SO_matrix()
 
             if purify_spin:
-                logging.info('Purify spin by energy penalty')
+                # logging.info('Purify spin by energy penalty')
+                print('Purify spin by energy penalty')
 
                 # assert ss is not None
-                H1, H2 = self.fix_spin(H1, H2, ss=self.spin, shift=shift)
+                H1, H2 = self.fix_spin(H1, H2, ss=ss, shift=shift)
 
 
             self.hcore = H1
@@ -768,9 +769,9 @@ class CASCI:
         self.e_tot = E + self.e_core
         self.ci = [X[:, n] for n in range(nstates)]
 
-        # for i in range(nstates):
-        #     ss = spin_square(*self.make_rdm12(i))
-        #     print("CASCI Root {}  E = {:.10f}  S^2 = {:.6f}".format(i, self.e_tot[i], ss))
+        for i in range(nstates):
+            ss = spin_square(*self.make_rdm12(i))
+            print("CASCI Root {}  E = {:.10f}  S^2 = {:.6f}".format(i, self.e_tot[i], ss))
 
         return self
 
@@ -1629,10 +1630,10 @@ if __name__ == "__main__":
     mf2 = mol2.RHF().run()
 
 
-    ncas, nelecas = (8,6)
+    ncas, nelecas = (6,6)
     # from pyqed.qchem import mcscf
     mc = CASCI(mf2, ncas, nelecas)
-    mc.run(3, method='direct_ci')
+    mc.run(3, method='direct_ci', purify_spin=False)
 
     # mc = CASCI(mf2, ncas, nelecas)
     # mc.run(3, mo_coeff=mf2.mo_coeff, purify_spin=True, shift=0.3)

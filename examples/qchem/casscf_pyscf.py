@@ -24,6 +24,9 @@ mc.verbose = 4
 # weights = [0.5, 0.5]
 # mc.state_average(weights)
 
+mc = mcscf.CASSCF(mf, 4, 4)
+mc.kernel()
+
 mc = mcscf.CASSCF(mf, 4, 4).state_average_(weights=(1/3,1/3,1/3))
 mc.kernel()
 
