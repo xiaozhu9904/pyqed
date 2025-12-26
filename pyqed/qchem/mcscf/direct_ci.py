@@ -1633,10 +1633,10 @@ if __name__ == "__main__":
     mf2 = mol2.RHF().run()
 
 
-    ncas, nelecas = (4,4)
+    ncas, nelecas = (8,4)
     # from pyqed.qchem import mcscf
     mc = CASCI(mf2, ncas, nelecas)
-    # mc.fix_spin()
+    mc.fix_spin()
 
     mc.run(3, method='direct_ci')
 
