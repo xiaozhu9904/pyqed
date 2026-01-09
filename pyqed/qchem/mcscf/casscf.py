@@ -9,8 +9,8 @@ import numpy as np
 from scipy.linalg import eigh
 # from pyqed.qchem.mcscf.casci import CASCI
 from opt_einsum import contract
-from pyqed.qchem.mcscf.direct_ci import CASCI
-# from pyqed.qchem.mcscf.casci import CASCI
+# from pyqed.qchem.mcscf.direct_ci import CASCI
+from pyqed.qchem.mcscf.casci import CASCI
 
 
 from pyqed.optimize import minimize
@@ -217,12 +217,17 @@ def kernel(mc, U0, nelecas, ncas, C0, h1e, eri, max_cycles=30, tol=1e-6, **kwarg
 def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
                          max_cycles=50, tol=1e-6, **kwargs):
 
+    if mc.ncore > 0:
+        with_core = True
+    else:
+        with_core = False
+        
     nstates = mc.nstates
 
     dm1 = 0
     dm2 = 0
     for n in range(nstates):
-        _dm1, _dm2 = mc.make_rdm12(n)
+        _dm1, _dm2 = mc.make_rdm12(n, with_core=with_core)
         dm1 += _dm1 * weights[n]
         dm2 += _dm2 * weights[n]
 
@@ -253,7 +258,7 @@ def kernel_state_average(mc, weights, U0, nelecas, ncas, C0, h1e, eri,
         dm1 = 0
         dm2 = 0
         for n in range(nstates):
-            _dm1, _dm2 = mc.make_rdm12(n)
+            _dm1, _dm2 = mc.make_rdm12(n, with_core=with_core)
             dm1 += _dm1 * weights[n]
             dm2 += _dm2 * weights[n]
 
@@ -339,6 +344,9 @@ def gradient(U, h1e, h2e, dm1, dm2):
 
 
 class CASPT2(CASSCF):
+    """
+    CASSCF 
+    """
     pass
 
 
@@ -354,20 +362,19 @@ class CASPT2(CASSCF):
 
 if __name__=='__main__':
 
-
     from pyqed import Molecule
     # from pyqed.qchem.mcscf.direct_ci import CASCI
 
-    mol = Molecule(atom='Li 0 0 0; H 0 0 1.4', unit='b', basis='631g')
-    mol.build()
+    mol = Molecule(atom='Li 0 0 0; F 0 0 1.4', unit='b', basis='sto6g')
+    mol.build(driver='pyscf')
 
     mf = mol.RHF().run()
 
-    mc = CASSCF(mf, ncas=4, nelecas=4, max_cycles=50)
+    mc = CASSCF(mf, ncas=2, nelecas=2, max_cycles=50)
 
-    # nstates = 2
-    # mc.state_average(weights = np.ones(nstates)/nstates)
-    mc.fix_spin(ss=0, shift=0.2)
+    nstates = 2
+    mc.state_average(weights = np.ones(nstates)/nstates)
+    # mc.fix_spin(ss=0, shift=0.2)
     mc.run()
 
     # correct result is E(CASSCF) = [-7.67160344]

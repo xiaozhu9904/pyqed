@@ -784,7 +784,9 @@ class CASCI:
             norb = ncas + ncore
             D = np.zeros((norb, norb), dtype=float)
 
-            if ncore > 0: D[:ncore, :ncore] = 2
+            if ncore > 0: 
+                for i in range(ncore): 
+                    D[i, i] = 2
             D[ncore:ncore+ncas, ncore:ncore+ncas] = make_rdm1(ci, self.binary, self.SC1)
 
             return D
@@ -792,7 +794,9 @@ class CASCI:
         if with_core and with_vir:
 
             D = np.zeros((nmo, nmo), dtype=float)
-            if ncore > 0: D[:ncore, :ncore] = 2
+            if ncore > 0: 
+                for i in range(ncore): 
+                    D[i, i] = 2
             D[ncore:ncore+ncas, ncore:ncore+ncas] = make_rdm1(ci, self.binary, self.SC1)
 
             return D
@@ -1567,7 +1571,7 @@ if __name__ == "__main__":
     #### test overlap
     mol2 = Molecule(atom = [
     ['Li' , (0. , 0. , 0)],
-    ['H' , (0. , 0. , 1.4)], ])
+    ['Li' , (0. , 0. , 1.4)], ])
     mol2.basis = '631g'
 
     # mol.unit = 'b'
@@ -1576,7 +1580,7 @@ if __name__ == "__main__":
     mf2 = mol2.RHF().run()
 
 
-    ncas, nelecas = (4,6)
+    ncas, nelecas = (4,2)
     mc = CASCI(mf2, ncas, nelecas)
     mc.run(5)
 
