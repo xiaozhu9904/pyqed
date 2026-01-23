@@ -2,7 +2,7 @@ import logging
 from typing import List, Union
 import numpy as np
 
-from pyqed.mps.auto_mpo.backend import (
+from pyqed.mps.autompo.backend import (
     backend, 
     npseed, 
     randomseed, 
@@ -11,10 +11,10 @@ from pyqed.mps.auto_mpo.backend import (
     OE_BACKEND
 )
 
-from pyqed.mps.auto_mpo.automatic_mpo_helper import construct_symbolic_mpo, _terms_to_table, symbolic_mo_to_numeric_mo, swap_site
-from pyqed.mps.auto_mpo.model import Model, HolsteinModel
-from pyqed.mps.auto_mpo.utils import Quantity
-from pyqed.mps.auto_mpo.Operator import Op
+from pyqed.mps.autompo.automatic_mpo_helper import construct_symbolic_mpo, _terms_to_table, symbolic_mo_to_numeric_mo, swap_site
+from pyqed.mps.autompo.model import Model, HolsteinModel
+from pyqed.mps.autompo.utils import Quantity
+from pyqed.mps.autompo.Operator import Op
 
 logger = logging.getLogger(__name__)
 

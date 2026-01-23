@@ -1,5 +1,5 @@
 import numpy as np
-from pyqed.mps.auto_mpo.Operator import Op
+from pyqed.mps.autompo.Operator import Op
 from typing import Union, List
 import scipy.linalg
 import scipy.special

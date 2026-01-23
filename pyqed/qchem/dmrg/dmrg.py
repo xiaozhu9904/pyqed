@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Mon Jun 10 13:59:10 2024
+Created on Fri Jan 23 09:48:18 2026
 
-@author: Bing Gu (gubing@westlake.edu.cn)
+Quantum Chemitry DMRG
 
-
-DMRG/DVR calculation for 1D systems with smooth potential.
-
-
-This code is based on the simple-dmrg code by James R. Garrison and Ryan V. Mishmash.
- <https://github.com/simple-dmrg/simple-dmrg/>
+@author: Shuoyi Hu
 
 
 """
+
+
 import numpy as np
 import scipy.constants as const
-# import scipy.linalg as la
-# import scipy
+
 from scipy.sparse.linalg import eigsh
 
 from scipy.special import erf
@@ -28,11 +24,11 @@ from pyqed import discretize, sort, dag, tensor
 from pyqed.davidson import davidson
 
 from pyqed import au2ev, au2angstrom
-from pyqed.dvr import SineDVR
-# from pyqed import scf
-# from pyqed.jordan_wigner import jordan_wigner_one_body, jordan_wigner_two_body
+# from pyqed.dvr import SineDVR
 
-from pyqed.qchem.ci.fci import SpinOuterProduct, givenΛgetB
+from pyqed.qchem.ci.fci import SpinOuterProduct, givenΛgetB 
+from pyqed.qchem.mcscf.casci import h1e_for_cas
+
 from pyqed.qchem.jordan_wigner.spinful import SpinHalfFermionOperators
 
 # from numba import vectorize, float64, jit
@@ -58,144 +54,6 @@ Nd = ops["Nd"]
 model_d = 4  # single-site basis size
 
 
-class SpinHalfFermionChain:
-
-    """
-    exact diagonalization of spin-half open fermion chain with long-range interactions
-
-    by Jordan-Wigner transformation
-
-    .. math::
-
-        H = \sum_{<rs>} (c_r^\dagger c_s + c†scr−γ(c†rc†s+cscr))−2λ \sum_r c^\dagger_r c_r,
-
-    where r and s indicate neighbors on the chain.
-
-    Electron interactions can be included in the Hamiltonian easily.
-
-    """
-    def __init__(self, h1e, eri, nelec=None):
-        # if L is None:
-        L = h1e.shape[-1]
-        self.L = self.nsites = L
-
-        self.h1e = h1e
-        self.eri = eri
-        self.d = 4 # local dimension of each site
-        # self.filling = filling
-        self.nelec = nelec
-
-        self.H = None
-        self.ops = None # basic operators for a chain
-
-    def run(self, nstates=1):
-
-        # # single electron part
-        # Ca = mf.mo_coeff[:, :self.ncas]
-        # hcore_mo = contract('ia, ij, jb -> ab', Ca.conj(), mf.hcore, Ca)
-
-
-        # eri = self.mf.eri
-        # eri_mo = contract('ip, iq, ij, jr, js -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
-
-        # # eri_mo = contract('ip, jq, ij, ir, js', mo.conj(), mo.conj(), eri, mo, mo)
-
-        # self.hcore_mo = hcore_mo
-
-        H = self.jordan_wigner()
-
-        E, X = eigsh(H, k=nstates, which='SA')
-        print('Energies = ', E)
-
-        return E, X
-
-
-
-    def jordan_wigner(self):
-        """
-        MOs based on Restricted HF calculations
-
-        Returns
-        -------
-        H : TYPE
-            DESCRIPTION.
-
-        """
-        # an inefficient implementation without consdiering any syemmetry
-
-        from pyqed.qchem.jordan_wigner.spinful import jordan_wigner_one_body, annihilate, \
-            create, Is #, jordan_wigner_two_body
-
-        nelec = self.nelec
-        h1e = self.h1e
-        v = self.eri
-
-
-        norb = h1e.shape[-1]
-        nmo = L = norb # does not necesarrily have to MOs
-
-
-        Cu = annihilate(norb, spin='up')
-        Cd = annihilate(norb, spin='down')
-        Cdu = create(norb, spin='up')
-        Cdd = create(norb, spin='down')
-
-        H = 0
-        # for p in range(nmo):
-        #     for q in range(p+1):
-                # H += jordan_wigner_one_body(q, p, hcore_mo[q, p], hc=True)
-        for p in range(nmo):
-            for q in range(nmo):
-                H += h1e[p, q] * (Cdu[p] @ Cu[q] + Cdd[p] @ Cd[q])
-
-        # build total number operator
-        # number_operator = 0
-        Na = 0
-        Nb = 0
-        for p in range(L):
-            Na += Cdu[p] @ Cu[p]
-            Nb += Cdd[p] @ Cd[p]
-        Ntot = Na + Nb
-
-        # poor man's implementation of JWT for 2e operators wihtout exploiting any symmetry
-        for p in range(nmo):
-            for q in range(nmo):
-                for r in range(nmo):
-                    for s in range(nmo):
-                        H += 0.5 * v[p, q, r, s] * (\
-                            Cdu[p] @ Cdu[r] @ Cu[s] @ Cu[q] +\
-                            Cdu[p] @ Cdd[r] @ Cd[s] @ Cu[q] +\
-                            Cdd[p] @ Cdu[r] @ Cu[s] @ Cd[q] +
-                            Cdd[p] @ Cdd[r] @ Cd[s] @ Cd[q])
-                        # H += jordan_wigner_two_body(p, q, s, r, )
-
-        # digonal elements for p = q, r = s
-        if self.nelec is not None:
-            I = tensor(Is(L))
-
-            H += 0.2* ((Na - nelec/2 * I) @ (Na - self.nelec/2 * I) + \
-                (Nb - self.nelec/2 * I) @ (Nb - self.nelec/2 * I))
-        self.H = H
-
-        self.ops = {"H": H,
-               "Cd": Cd,
-               "Cu": Cu,
-               "Cdd": Cdd,
-               "Cdu": Cdu,
-               "Nu" : Na,
-               "Nd" : Nb,
-               "Ntot": Ntot
-               }
-
-        return H
-
-
-
-    def DMRG(self):
-        pass
-
-    def gen_mps(self):
-        pass
 
 
 # We will use python's "namedtuple" to represent the Block and EnlargedBlock objects
@@ -241,8 +99,7 @@ def H2(Sz1, Sp1, Sz2, Sp2):  # two-site part of H
     )
 
 
-import scipy
-# scipy.linalg.kron(a, b)
+
 def enlarge_block(block, h1e, eri, forward=True):
     """
     This function enlarges the provided Block by a single site, returning an
@@ -470,117 +327,6 @@ def single_dmrg_step(sys, env, h1e, eri, m, forward=True):
 
 
     return newblock, newblock_env, energy
-
-# def single_dmrg_step(sys, env, m):
-#     """
-#     Performs a single DMRG step using `sys` as the system and `env` as the
-#     environment, keeping a maximum of `m` states in the new basis.
-#     """
-#     # assert is_valid_block(sys)
-#     # assert is_valid_block(env)
-
-#     # Enlarge each block by a single site.
-#     sys_enl = enlarge_block(sys)
-
-#     if sys is env:  # no need to recalculate a second time
-#         env_enl = sys_enl
-#     else:
-#         env_enl = enlarge_block(env, direction='backward')
-
-#     # assert is_valid_enlarged_block(sys_enl)
-#     # assert is_valid_enlarged_block(env_enl)
-
-#     # Construct the full superblock Hamiltonian.
-#     m_sys_enl = sys_enl.basis_size
-#     m_env_enl = env_enl.basis_size
-#     sys_enl_op = sys_enl.operator_dict
-#     env_enl_op = env_enl.operator_dict
-
-
-#     superblock_hamiltonian = kron(sys_enl_op["H"], identity(m_env_enl)) + \
-#                              kron(identity(m_sys_enl), env_enl_op["H"])
-
-#     for j in range(sys.length):
-#         for k in range(env.length):
-#             superblock_hamiltonian += eri[j, k] * kron(sys_enl_op["Ntot"][j], env_enl_op["Ntot"][k])
-#             superblock_hamiltonian += h1e[j, k] * (kron(sys_enl_op["Cdu"][j], env_enl_op["Cu"][k]) +\
-#                                             kron(sys_enl_op["Cdd"][j], env_enl_op["Cd"][k]) +\
-#                                             kron(sys_enl_op["Cu"][j], env_enl_op["Cdu"][k]) +\
-#                                             kron(sys_enl_op["Cdd"][j], env_enl_op["Cd"][k])
-#                                             )
-
-#     # Call ARPACK to find the superblock ground state.  ("SA" means find the
-#     # "smallest in amplitude" eigenvalue.)
-#     (energy,), psi0 = eigsh(superblock_hamiltonian, k=1, which="SA")
-
-#     # Construct the reduced density matrix of the system by tracing out the
-#     # environment
-#     #
-#     # We want to make the (sys, env) indices correspond to (row, column) of a
-#     # matrix, respectively.  Since the environment (column) index updates most
-#     # quickly in our Kronecker product structure, psi0 is thus row-major ("C
-#     # style").
-
-
-#     psi0 = psi0.reshape([sys_enl.basis_size, -1], order="C")
-#     rho = np.dot(psi0, psi0.conjugate().transpose())
-#     rho_env = np.dot(psi0.conjugate().transpose(), psi0)
-
-#     # Diagonalize the reduced density matrix and sort the eigenvectors by
-#     # eigenvalue.
-#     evals, evecs = np.linalg.eigh(rho)
-#     possible_eigenstates = []
-#     for eval, evec in zip(evals, evecs.transpose()):
-#         possible_eigenstates.append((eval, evec))
-#     possible_eigenstates.sort(reverse=True, key=lambda x: x[0])  # largest eigenvalue first
-
-#     evals_env, evecs_env = np.linalg.eigh(rho_env)
-#     possible_eigenstates_env = []
-#     for eval, evec in zip(evals_env, evecs_env.transpose()):
-#         possible_eigenstates_env.append((eval, evec))
-#     possible_eigenstates_env.sort(reverse=True, key=lambda x: x[0])  # largest eigenvalue first
-
-
-#     # Build the transformation matrix from the `m` overall most significant
-#     # eigenvectors.
-#     my_m = min(len(possible_eigenstates), m)
-#     transformation_matrix = np.zeros((sys_enl.basis_size, my_m), dtype='d', order='F')
-#     for i, (eval, evec) in enumerate(possible_eigenstates[:my_m]):
-#         transformation_matrix[:, i] = evec
-
-#     transformation_matrix_env = np.zeros((sys_enl.basis_size, my_m), dtype='d', order='F')
-#     for i, (eval, evec) in enumerate(possible_eigenstates_env[:my_m]):
-#         transformation_matrix_env[:, i] = evec
-
-#     truncation_error = 1 - sum([x[0] for x in possible_eigenstates[:my_m]])
-#     print("truncation error:", truncation_error)
-
-#     # Rotate and truncate each operator.
-#     new_operator_dict = {}
-#     for name, op in sys_enl.operator_dict.items():
-#         new_operator_dict[name] = rotate_and_truncate(op, transformation_matrix)
-
-#     new_env_operator_dict = {}
-#     for name, op in sys_enl.operator_dict.items():
-#         new_env_operator_dict[name] = rotate_and_truncate(op, transformation_matrix_env)
-
-#     # for name in ["H", "Ntot"]:
-#     #     new_operator_dict[name] = rotate_and_truncate(sys_enl.operator_dict[name], transformation_matrix)
-
-#     # for name in ["Cu", "Cd", "Cdu", "Cdd"]:
-#     #     new_operator_dict[name] = [rotate_and_truncate(op, transformation_matrix)\
-#     #                                for op in sys_enl.operator_dict[name]]
-
-#     newblock = Block(length=sys_enl.length,
-#                      basis_size=my_m,
-#                      operator_dict=new_operator_dict)
-
-#     newblock_env = Block(length=env_enl.length,
-#                      basis_size=my_m,
-#                      operator_dict=new_env_operator_dict)
-
-
-#     return newblock, newblock_env, energy
 
 def sweep(sys, env, h1e, eri, m, forward=True):
     """
@@ -831,11 +577,12 @@ def finite_system_algorithm(L, m_warmup, m):
         if sys_label == "l" and 2 * sys_block.length == L:
             break  # escape from the "while True" loop
 
-class DMRG:
+class QCDMRG:
     """
-    ab initio DRMG/DVR quantum chemistry calculation for 1D fermion chain
+    ab initio DRMG quantum chemistry calculation 
     """
-    def __init__(self, mf, D, m_warmup=None, tol=1e-6):
+    def __init__(self, mf, ncas, nelecas, D, init_guess=None, m_warmup=None,\
+                 spin=None, tol=1e-6):
         """
         DMRG sweeping algorithm directly using DVR set (without SCF calculations)
 
@@ -859,17 +606,9 @@ class DMRG:
 
         self.mf = mf
 
-        self.d = 4
+        self.d = 4 # local dimension for spacial orbital
 
-        self.h1e = mf.hcore
-
-
-        self.eri = mf.eri
-
-        try:
-            self.nsites = self.L = mf.nx
-        except:
-            self.nsites = self.L = mf.nz
+        self.nsites = self.L = ncas
 
         # assert(mf.eri.shape == (self.L, self.L))
 
@@ -883,71 +622,54 @@ class DMRG:
             m_warmup = D
         self.m_warmup = m_warmup
 
-    # def run(self, initial_block, m_warmup=10):
-    #     L = self.L
-    #     m = self.m
+        self.ncas = ncas # number of MOs in active space
+        self.nelecas = nelecas
 
-    #     assert L % 2 == 0  # require that L is an even number
+        ncore = mf.nelec//2 - self.nelecas//2 # core orbs
+        assert(ncore >= 0)
 
-    #     # To keep things simple, this dictionary is not actually saved to disk, but
-    #     # we use it to represent persistent storage.
-    #     block_disk = {}  # "disk" storage for Block objects
+        self.ncore = ncore
 
-    #     # Use the infinite system algorithm to build up to desired size.  Each time
-    #     # we construct a block, we save it for future reference as both a left
-    #     # ("l") and right ("r") block, as the infinite system algorithm assumes the
-    #     # environment is a mirror image of the system.
-    #     block = initial_block
-    #     block_disk["l", block.length] = block
-    #     block_disk["r", block.length] = block
+        if ncas > 20:
+            warnings.warn('Active space with {} orbitals is probably too big.'.format(ncas))
 
-    #     while 2 * block.length < L:
-    #         # Perform a single DMRG step and save the new Block to "disk"
-    #         print(graphic(block, block))
-    #         block, energy = single_dmrg_step(block, block, m=m_warmup)
-    #         print("E/L =", energy / (block.length * 2))
-    #         block_disk["l", block.length] = block
-    #         block_disk["r", block.length] = block
+        self.nstates = None
+        # if nelecas is None:
+        #     nelecas = mf.mol.nelec
 
-    #     # Now that the system is built up to its full size, we perform sweeps using
-    #     # the finite system algorithm.  At first the left block will act as the
-    #     # system, growing at the expense of the right block (the environment), but
-    #     # once we come to the end of the chain these roles will be reversed.
-    #     sys_label, env_label = "l", "r"
-    #     sys_block = block; del block  # rename the variable
+        # if nelecas <= 2:
+        #     print('Electrons < 2. Use CIS or CISD instead.')
 
-    #     # Now that the system is built up to its full size, we perform sweeps using
-    #     # the finite system algorithm.  At first the left block will act as the
-    #     # system, growing at the expense of the right block (the environment), but
-    #     # once we come to the end of the chain these roles will be reversed.
-    #     sys_label, env_label = "l", "r"
-    #     sys_block = block; del block  # rename the variable
 
-    #     # for m in m_sweep_list:
-    #     while True:
-    #         # Load the appropriate environment block from "disk"
-    #         env_block = block_disk[env_label, L - sys_block.length - 2]
+        self.mo_core = None
+        self.mo_cas = None
 
-    #         if env_block.length == 1:
-    #             # We've come to the end of the chain, so we reverse course.
-    #             sys_block, env_block = env_block, sys_block
-    #             sys_label, env_label = env_label, sys_label
+        if spin is None:
+            spin = mf.mol.spin
+        self.spin = spin
+        self.shift = None
+        self.ss = None
 
-    #         # Perform a single DMRG step.
-    #         print(graphic(sys_block, env_block, sys_label))
+        self.mf = mf
+        # self.chemical_potential = mu
 
-    #         sys_block, energy = single_dmrg_step(sys_block, env_block, m=m)
+        self.mol = mf.mol
 
-    #         print("E =", energy)
+        ###
+        self.e_tot = None
+        self.e_core = None # core energy
+        self.ci = None # CI coefficients
+        self.H = None
 
-    #         # Save the block from this step to disk.
-    #         block_disk[sys_label, sys_block.length] = sys_block
 
-    #         # Check whether we just completed a full sweep.
-    #         if sys_label == "l" and 2 * sys_block.length == L:
-    #             break  # escape from the "while True" loop
+        self.hcore = self.h1e_cas = None # effective 1e CAS Hamiltonian including the influence of frozen orbitals
+        self.eri_so = self.h2e_cas = None # spin-orbital ERI in the active space
 
-    #         # finite_system_algorithm(L, m_warmup, m)
+        self.spin_purification = False
+
+        # effective CAS Hamiltonian
+        self.h1e = None
+        self.h2e = None
 
     def fix_nelec(self, shift):
         """
@@ -993,13 +715,108 @@ class DMRG:
         # self.eri += ...
         return
 
+    def get_SO_matrix(self, spin_flip=False, H1=None, H2=None):
+        """
+        Given a rhf object get Spin-Orbit Matrices
+
+        SF: bool
+            spin-flip
+
+        Returns
+        -------
+        H1: list of [h1e_a, h1e_b]
+        H2: list of ERIs [[ERI_aa, ERI_ab], [ERI_ba, ERI_bb]]
+        """
+        # from pyscf import ao2mo
+
+        mf = self.mf
+
+        # molecular orbitals
+        Ca, Cb = [self.mo_cas, ] * 2
+
+        H, energy_core = h1e_for_cas(mf, ncas=self.ncas, ncore=self.ncore, \
+                                     mo_coeff=self.mo_coeff)
+
+        self.e_core = energy_core
+
+
+        # S = (uhf_pyscf.mol).intor("int1e_ovlp")
+        # eig, v = np.linalg.eigh(S)
+        # A = (v) @ np.diag(eig**(-0.5)) @ np.linalg.inv(v)
+
+        # H1e in AO
+        # H = mf.get_hcore()
+        # H = dag(Ca) @ H @ Ca
+
+        # nmo = Ca.shape[1] # n
+
+        eri = mf.eri  # (pq||rs) 1^* 1 2^* 2
+
+        ### compute SO ERIs (MO)
+        eri_aa = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Ca.conj(), Ca)
+
+        # physicts notation <pq|rs>
+        # eri_aa = contract('ip, jq, ij, ir, js -> pqrs', Ca.conj(), Ca.conj(), eri, Ca, Ca)
+
+        # eri_aa -= eri_aa.swapaxes(1,3)
+
+        eri_bb = eri_aa.copy()
+
+        eri_ab = contract('ip, jq, ijkl, kr, ls -> pqrs', Ca.conj(), Ca, eri, Cb.conj(), Cb)
+        eri_ba = contract('ip, jq, ijkl, kr, ls -> pqrs', Cb.conj(), Cb, eri, Ca.conj(), Ca)
+
+
+
+
+        # eri_aa = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Ca, Ca, Ca),
+        #                         compact=False)).reshape((n,n,n,n), order="C")
+        # eri_aa -= eri_aa.swapaxes(1,3)
+
+        # eri_bb = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Cb, Cb, Cb),
+        # compact=False)).reshape((n,n,n,n), order="C")
+        # eri_bb -= eri_bb.swapaxes(1,3)
+
+        # eri_ab = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Ca, Cb, Cb),
+        # compact=False)).reshape((n,n,n,n), order="C")
+        # #eri_ba = (1.*eri_ab).swapaxes(0,3).swapaxes(1,2) ## !! caution depends on symmetry
+
+        # eri_ba = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Cb, Ca, Ca),
+        # compact=False)).reshape((n,n,n,n), order="C")
+
+        H2 = np.stack(( np.stack((eri_aa, eri_ab)), np.stack((eri_ba, eri_bb)) ))
+
+        # H1 = np.asarray([np.einsum("AB, Ap, Bq -> pq", H, Ca, Ca),
+                         # np.einsum("AB, Ap, Bq -> pq", H, Cb, Cb)])
+        H1 = [H, H]
+
+        if spin_flip:
+            raise NotImplementedError('Spin-flip matrix elements not implemented yet')
+        #     eri_abab = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Cb, Ca, Cb),
+        #     compact=False)).reshape((n,n,n,n), order="C")
+        #     eri_abba = (ao2mo.general( (uhf_pyscf)._eri , (Ca, Cb, Cb, Ca),
+        #     compact=False)).reshape((n,n,n,n), order="C")
+        #     eri_baab = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Ca, Ca, Cb),
+        #     compact=False)).reshape((n,n,n,n), order="C")
+        #     eri_baba = (ao2mo.general( (uhf_pyscf)._eri , (Cb, Ca, Cb, Ca),
+        #     compact=False)).reshape((n,n,n,n), order="C")
+        #     H2_SF = np.stack(( np.stack((eri_abab, eri_abba)), np.stack((eri_baab, eri_baba)) ))
+        #     return H1, H2, H2_SF
+        # else:
+        #     return H1, H2
+        return H1, H2
 
     def run(self):
 
         # L = self.L
         m_warmup = self.m_warmup
 
-        return kernel(self.h1e, self.eri, m_warmup=m_warmup, m=self.D, \
+        h1e, eri = self.get_SO_matrix()
+        
+        if self.init_guess is None:
+            logging.info('Building initial guess by iDMRG')
+            # iDMRG
+        
+        return kernel(h1e, eri, m_warmup=m_warmup, m=self.D, \
                       shift=self.rigid_shift, tol=self.tol)
 
 
@@ -1101,77 +918,11 @@ def kernel(h1e, eri, m, m_warmup=None, shift=0, tol=1e-6):
             else:
                 old_energy = energy
 
-class DMRGSCF(DMRG):
+class DMRGSCF(QCDMRG):
     """
     optimize the orbitals
     """
     pass
-
-    def debug():
-        sys = Block(length=1, basis_size=4, operator_dict={
-                "H": H1[0],
-                "Ntot": [Ntot],
-                "Cu": [Cu @ JW],
-                "Cd": [Cd @ JW],
-                # "Nu": [ops['Nu']],
-                # "Nd": [ops['Nd']],
-                "Cdu": [Cdu @ JW],
-                "Cdd": [Cdd @ JW]
-            })
-
-        env =  Block(length=1, basis_size=4, operator_dict={
-                "H": H1[-1],
-                "Ntot": [Ntot],
-                "Cu": [Cu],
-                "Cd": [Cd],
-                # "Nu": [ops['Nu']],
-                # "Nd": [ops['Nd']],
-                "Cdu": [Cdu],
-                "Cdd": [Cdd]
-            })
-
-        sys_enl = enlarge_block(enlarge_block(sys))
-        H = sys_enl.operator_dict["H"]
-
-        print(H.shape)
-        print(eigsh(H,6)[0])
-
-        env_enl = enlarge_block(enlarge_block(env, forward=False), forward=False)
-        H = env_enl.operator_dict["H"]
-        # mblock = 4
-        # site_id = 1
-        # o = sys.operator_dict
-        # H = kron(H1[0], identity(4)) + kron(identity(mblock), H1[1])
-
-        # print(Ntot)
-
-        # # for j in range(1):
-        # H += eri[0, 1] * kron(Ntot, Ntot)
-        # H += h1e[0, 1] * (kron(Cdu @ JW, Cu) + kron(Cdd @ JW, Cd) - \
-        #                             kron(Cu @ JW, Cdu) - kron(Cd @ JW, Cdd))
-        # # H += h1e[1, 0] * (kron(JW @ Cu, Cdu) + kron(JW @ Cd, Cdd))
-        print(H.shape)
-        print(eigsh(H,6)[0])
-
-
-        nx = mf.nx
-        I = np.eye(nx)
-        eri_full = contract('ij, jk, kl -> ijkl', I, eri, I)
-        # eri_full = np.zeros((nx, nx, nx, nx))
-        # for i in range(nx):
-        #     for j in range(nx):
-        #         for k in range(nx):
-        #             for l in range(nx):
-        #                 eri_full[i,j,k,l] = eri[j,k] * I[i, j] * I[k, l]
-
-        for n in range(3, 4):
-        # E, X = SpinHalfFermionChain(h1e, eri_full, nelec=6).run()
-            model = SpinHalfFermionChain(h1e[n:,n:], eri_full[n:,n:,n:,n:], nelec=4)
-
-            H  = model.jordan_wigner()
-            print(H.shape)
-            print(eigsh(H,k=6)[0])
-
 
 
 if __name__=='__main__':
@@ -1191,6 +942,8 @@ if __name__=='__main__':
     #     ['Li' , (0. , 0. , 0.)], ]
     # mol.basis = 'sto3g'
     # mol.build()
+
+
 
     # mf = scf.RHF(mol).run()
 
@@ -1264,6 +1017,71 @@ if __name__=='__main__':
 
 
     ### DMRG
+
+    def debug():
+        sys = Block(length=1, basis_size=4, operator_dict={
+                "H": H1[0],
+                "Ntot": [Ntot],
+                "Cu": [Cu @ JW],
+                "Cd": [Cd @ JW],
+                # "Nu": [ops['Nu']],
+                # "Nd": [ops['Nd']],
+                "Cdu": [Cdu @ JW],
+                "Cdd": [Cdd @ JW]
+            })
+
+        env =  Block(length=1, basis_size=4, operator_dict={
+                "H": H1[-1],
+                "Ntot": [Ntot],
+                "Cu": [Cu],
+                "Cd": [Cd],
+                # "Nu": [ops['Nu']],
+                # "Nd": [ops['Nd']],
+                "Cdu": [Cdu],
+                "Cdd": [Cdd]
+            })
+
+        sys_enl = enlarge_block(enlarge_block(sys))
+        H = sys_enl.operator_dict["H"]
+
+        print(H.shape)
+        print(eigsh(H,6)[0])
+
+        env_enl = enlarge_block(enlarge_block(env, forward=False), forward=False)
+        H = env_enl.operator_dict["H"]
+        # mblock = 4
+        # site_id = 1
+        # o = sys.operator_dict
+        # H = kron(H1[0], identity(4)) + kron(identity(mblock), H1[1])
+
+        # print(Ntot)
+
+        # # for j in range(1):
+        # H += eri[0, 1] * kron(Ntot, Ntot)
+        # H += h1e[0, 1] * (kron(Cdu @ JW, Cu) + kron(Cdd @ JW, Cd) - \
+        #                             kron(Cu @ JW, Cdu) - kron(Cd @ JW, Cdd))
+        # # H += h1e[1, 0] * (kron(JW @ Cu, Cdu) + kron(JW @ Cd, Cdd))
+        print(H.shape)
+        print(eigsh(H,6)[0])
+
+
+        nx = mf.nx
+        I = np.eye(nx)
+        eri_full = contract('ij, jk, kl -> ijkl', I, eri, I)
+        # eri_full = np.zeros((nx, nx, nx, nx))
+        # for i in range(nx):
+        #     for j in range(nx):
+        #         for k in range(nx):
+        #             for l in range(nx):
+        #                 eri_full[i,j,k,l] = eri[j,k] * I[i, j] * I[k, l]
+
+        for n in range(3, 4):
+        # E, X = SpinHalfFermionChain(h1e, eri_full, nelec=6).run()
+            model = SpinHalfFermionChain(h1e[n:,n:], eri_full[n:,n:,n:,n:], nelec=4)
+
+            H  = model.jordan_wigner()
+            print(H.shape)
+            print(eigsh(H,k=6)[0])
 
 
     dmrg = DMRG(mf, L=nsites, D=10)

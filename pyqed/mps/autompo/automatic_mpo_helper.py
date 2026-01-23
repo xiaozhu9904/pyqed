@@ -8,9 +8,9 @@ import numpy as np
 import scipy
 import scipy.sparse
 
-from pyqed.mps.auto_mpo.model import Model
-from pyqed.mps.auto_mpo.basis import BasisSet
-from pyqed.mps.auto_mpo.Operator import Op
+from pyqed.mps.autompo.model import Model
+from pyqed.mps.autompo.basis import BasisSet
+from pyqed.mps.autompo.Operator import Op
 
 logger = logging.getLogger(__name__)
 

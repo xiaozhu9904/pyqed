@@ -6,11 +6,11 @@ from typing import List, Union, Dict, Callable
 from collections import Counter, OrderedDict
 import numpy as np
 
-from pyqed.mps.auto_mpo.basis import BasisSet, BasisSimpleElectron, BasisMultiElectronVac, BasisHalfSpin, BasisSHO
+from pyqed.mps.autompo.basis import BasisSet, BasisSimpleElectron, BasisMultiElectronVac, BasisHalfSpin, BasisSHO
 
-from pyqed.mps.auto_mpo.Operator import Op, OpSum
+from pyqed.mps.autompo.Operator import Op, OpSum
 
-from pyqed.mps.auto_mpo.utils import Quantity, cached_property
+from pyqed.mps.autompo.utils import Quantity, cached_property
 from scipy.stats import binom
 
 
