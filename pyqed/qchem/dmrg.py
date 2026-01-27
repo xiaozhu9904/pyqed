@@ -6,7 +6,7 @@ Created on Mon Jun 10 13:59:10 2024
 @author: Bing Gu (gubing@westlake.edu.cn)
 
 
-DMRG/DVR calculation for 1D systems.
+DMRG/DVR calculation for 1D systems with smooth potential.
 
 
 This code is based on the simple-dmrg code by James R. Garrison and Ryan V. Mishmash.
